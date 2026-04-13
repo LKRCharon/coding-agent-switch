@@ -5,7 +5,7 @@
 profiles/*/auth.json
 
 # runtime and local state
-gateway/runtime/
+gateway/runtime/*
 !gateway/runtime/.gitkeep
 gateway/.venv/
 *.log
