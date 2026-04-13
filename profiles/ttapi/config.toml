@@ -1,0 +1,15 @@
+# ttapi
+model_provider = "ttapi"
+model = "gpt-5.4"
+review_model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+[model_providers.ttapi]
+name = "ttapi"
+base_url = "https://w.ciykj.cn"
+wire_api = "responses"
+requires_openai_auth = true
+env_key = "TTAPI_API_KEY"
+
+[features]
+multi_agent = true

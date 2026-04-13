@@ -1,0 +1,525 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+BIN_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+PROJECT_ROOT="$(cd "${BIN_DIR}/.." && pwd)"
+GATEWAY_DIR="${PROJECT_ROOT}/gateway"
+CLAUDE_GATEWAY_SWITCH="${GATEWAY_DIR}/claude-gateway-switch"
+PROFILES_ROOT="${PROJECT_ROOT}/profiles"
+BALANCE_HELPER="${PROJECT_ROOT}/lib/provider_balance.py"
+ROOT_ENV_FILE="${ROOT_ENV_FILE:-${PROJECT_ROOT}/.env}"
+SUB2API_CTL="${SUB2API_CTL:-${PROJECT_ROOT}/sub2api-local/sub2api-localctl}"
+LOCAL_NO_PROXY="127.0.0.1,localhost"
+PYTHON_BIN="${GATEWAY_DIR}/.venv/bin/python"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  PYTHON_BIN="python3"
+fi
+
+export NO_PROXY="$LOCAL_NO_PROXY${NO_PROXY:+,$NO_PROXY}"
+export no_proxy="$LOCAL_NO_PROXY${no_proxy:+,$no_proxy}"
+
+load_local_env_file() {
+  local env_file="$1"
+  [[ -f "${env_file}" ]] || return 0
+  set -a
+  # shellcheck disable=SC1090
+  source "${env_file}"
+  set +a
+}
+
+load_local_env_file "${ROOT_ENV_FILE}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|prepare|backend] [extra args...]
+  agent-switch [claude|codex] [profile] [client args...]
+  agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
+  agent-switch balance-login <provider> [--username USER --prompt-password]
+  agent-switch list
+
+Profiles:
+  native   -> claude/codex native mode (no gateway)
+  sub2api  -> default port 4020 (local sub2api backend)
+  ttapi    -> default port 4020
+  fox      -> default port 4011
+  cfm      -> default port 4030 (codex-for-me primary endpoint)
+  cfm-asia -> default port 4031 (codex-for-me fallback endpoint)
+
+Examples:
+  ./bin/agent-switch list
+  ./bin/agent-switch codex cfm exec "Reply with exactly OK."
+  ./bin/agent-switch claude native
+  ./bin/agent-switch claude cfm -p "Reply with exactly OK."
+  ./bin/agent-switch balance cfm --json
+  ./bin/agent-switch balance-login cfm --username your_name --prompt-password
+USAGE
+}
+
+die() {
+  echo "$*" >&2
+  exit 1
+}
+
+is_client() {
+  case "$1" in
+    claude|codex) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_profile() {
+  [[ "$1" == "native" ]] && return 0
+  [[ -d "${PROFILES_ROOT}/$1" ]]
+}
+
+list_profiles() {
+  echo "native"
+  find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+}
+
+default_profile() {
+  if [[ -d "${PROFILES_ROOT}/sub2api" ]]; then
+    echo "sub2api"
+    return
+  fi
+
+  local first
+  first="$(find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | head -n 1)"
+  if [[ -n "${first}" ]]; then
+    echo "${first}"
+    return
+  fi
+
+  echo "native"
+}
+
+port_for_profile() {
+  case "$1" in
+    sub2api) echo "4020" ;;
+    ttapi) echo "4020" ;;
+    fox) echo "4011" ;;
+    cfm) echo "4030" ;;
+    cfm-asia) echo "4031" ;;
+    *) echo "4040" ;;
+  esac
+}
+
+run_backend() {
+  [[ -x "${SUB2API_CTL}" ]] || die "sub2api backend controller not found: ${SUB2API_CTL}"
+  "${SUB2API_CTL}" "$@"
+}
+
+ensure_backend_started() {
+  if [[ "${PROFILE}" == "sub2api" ]]; then
+    run_backend start
+  fi
+}
+
+stop_backend_if_needed() {
+  if [[ "${PROFILE}" == "sub2api" ]]; then
+    run_backend stop
+  fi
+}
+
+json_quote() {
+  "${PYTHON_BIN}" -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=True))' "$1"
+}
+
+load_profile_vars() {
+  eval "$("${PYTHON_BIN}" - "$PROFILES_ROOT" "$PROFILE" <<'PY'
+import json
+import os
+import shlex
+import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+from pathlib import Path
+
+profiles_root = Path(sys.argv[1])
+profile = sys.argv[2]
+cfg_path = profiles_root / profile / "config.toml"
+auth_path = profiles_root / profile / "auth.json"
+
+if not cfg_path.is_file():
+    raise SystemExit(f"missing profile config: {cfg_path}")
+
+cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+providers = cfg.get("model_providers", {})
+provider = providers.get(profile)
+if provider is None:
+    raise SystemExit(f"profile provider section missing: model_providers.{profile}")
+
+auth = {}
+if auth_path.is_file():
+    auth = json.loads(auth_path.read_text(encoding="utf-8"))
+
+env_key = str(provider.get("env_key", "OPENAI_API_KEY"))
+api_key = str(auth.get("OPENAI_API_KEY", "")).strip() or str(os.getenv(env_key, "")).strip() or str(os.getenv("OPENAI_API_KEY", "")).strip()
+
+model = str(cfg.get("model", "gpt-5.4"))
+reasoning = str(cfg.get("model_reasoning_effort", ""))
+base_url = str(provider.get("base_url", ""))
+provider_name = str(provider.get("name", profile))
+wire_api = str(provider.get("wire_api", "responses"))
+requires_auth = bool(provider.get("requires_openai_auth", True))
+
+
+def emit(k: str, v: str) -> None:
+    print(f"{k}={shlex.quote(v)}")
+
+emit("PROFILE_MODEL", model)
+emit("PROFILE_REASONING", reasoning)
+emit("PROFILE_API_KEY", api_key)
+emit("PROFILE_BASE_URL", base_url)
+emit("PROFILE_PROVIDER_NAME", provider_name)
+emit("PROFILE_WIRE_API", wire_api)
+emit("PROFILE_ENV_KEY", env_key)
+emit("PROFILE_REQUIRES_OPENAI_AUTH", "true" if requires_auth else "false")
+PY
+)"
+}
+
+run_balance() {
+  [[ -f "${BALANCE_HELPER}" ]] || die "Missing helper: ${BALANCE_HELPER}"
+  exec "${PYTHON_BIN}" "${BALANCE_HELPER}" "$@"
+}
+
+token_env_key_for_provider() {
+  case "$1" in
+    cfm|cfm-asia) echo "CFM_AUTH_TOKEN" ;;
+    *) echo "${1^^}_AUTH_TOKEN" ;;
+  esac
+}
+
+upsert_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  "${PYTHON_BIN}" - "$env_file" "$key" "$value" <<'PY'
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+
+line = f"{key}='{value.replace("'", "'\"'\"'")}'"
+
+lines = []
+if env_path.exists():
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+
+updated = False
+new_lines = []
+for raw in lines:
+    stripped = raw.strip()
+    if stripped.startswith(f"{key}="):
+        if not updated:
+            new_lines.append(line)
+            updated = True
+        continue
+    new_lines.append(raw)
+
+if not updated:
+    if new_lines and new_lines[-1] != "":
+        new_lines.append("")
+    new_lines.append(line)
+
+env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+PY
+  chmod 600 "${env_file}" 2>/dev/null || true
+}
+
+run_balance_login() {
+  [[ -f "${BALANCE_HELPER}" ]] || die "Missing helper: ${BALANCE_HELPER}"
+  [[ $# -ge 1 ]] || die "Usage: agent-switch balance-login <provider> [--username USER --prompt-password]"
+
+  local provider="$1"
+  shift || true
+
+  local token
+  token="$("${PYTHON_BIN}" "${BALANCE_HELPER}" "${provider}" --force-login --emit-token "$@")"
+  [[ -n "${token}" ]] || die "empty token returned from provider login"
+
+  local env_key
+  env_key="$(token_env_key_for_provider "${provider}")"
+  upsert_env_var "${ROOT_ENV_FILE}" "${env_key}" "${token}"
+
+  local masked
+  if [[ ${#token} -gt 10 ]]; then
+    masked="${token:0:6}...${token: -4}"
+  else
+    masked="***"
+  fi
+
+  echo "Updated ${env_key} in ${ROOT_ENV_FILE} (${masked})"
+}
+
+run_claude_switch() {
+  "${CLAUDE_GATEWAY_SWITCH}" "$@"
+}
+
+run_claude() {
+  local cmd="${1:-}"
+
+  if [[ "${PROFILE}" == "native" ]]; then
+    case "$cmd" in
+      "" )
+        exec claude
+        ;;
+      help|-h|--help)
+        usage
+        ;;
+      status)
+        echo "claude backend=native"
+        ;;
+      env)
+        echo "claude backend=native"
+        ;;
+      *)
+        exec claude "$@"
+        ;;
+    esac
+    return 0
+  fi
+
+  case "$cmd" in
+    help|-h|--help)
+      usage
+      ;;
+    list)
+      list_profiles
+      ;;
+    backend)
+      shift
+      if [[ "${PROFILE}" != "sub2api" ]]; then
+        die "backend only applies to profile: sub2api"
+      fi
+      run_backend "${@:-status}"
+      ;;
+    serve)
+      shift
+      ensure_backend_started
+      run_claude_switch serve "${PROFILE}" --port "${PORT}" "$@"
+      ;;
+    stop)
+      shift
+      run_claude_switch stop "${PROFILE}" --port "${PORT}" "$@" || true
+      stop_backend_if_needed
+      ;;
+    status)
+      shift
+      if [[ "${PROFILE}" == "sub2api" && -x "${SUB2API_CTL}" ]]; then
+        run_backend status || true
+      fi
+      run_claude_switch status "$@"
+      ;;
+    logs)
+      shift
+      mkdir -p "${GATEWAY_DIR}/runtime"
+      local log_path="${GATEWAY_DIR}/runtime/litellm-${PROFILE}-${PORT}.log"
+      touch "${log_path}"
+      chmod 600 "${log_path}" 2>/dev/null || true
+      exec tail -f "${log_path}"
+      ;;
+    env)
+      shift
+      run_claude_switch env "${PROFILE}" --port "${PORT}" "$@"
+      ;;
+    prepare)
+      shift
+      ensure_backend_started
+      run_claude_switch prepare "${PROFILE}" --port "${PORT}" "$@"
+      ;;
+    "")
+      ensure_backend_started
+      run_claude_switch serve "${PROFILE}" --port "${PORT}" >/dev/null
+      exec "${CLAUDE_GATEWAY_SWITCH}" claude "${PROFILE}" --port "${PORT}"
+      ;;
+    *)
+      ensure_backend_started
+      run_claude_switch serve "${PROFILE}" --port "${PORT}" >/dev/null
+      exec "${CLAUDE_GATEWAY_SWITCH}" claude "${PROFILE}" --port "${PORT}" -- "$@"
+      ;;
+  esac
+}
+
+run_codex() {
+  local cmd="${1:-}"
+
+  if [[ "${PROFILE}" == "native" ]]; then
+    case "$cmd" in
+      "")
+        exec codex
+        ;;
+      help|-h|--help)
+        usage
+        ;;
+      status)
+        echo "codex backend=native"
+        ;;
+      env)
+        echo "codex backend=native"
+        ;;
+      *)
+        exec codex "$@"
+        ;;
+    esac
+    return 0
+  fi
+
+  case "$cmd" in
+    help|-h|--help)
+      usage
+      ;;
+    list)
+      list_profiles
+      ;;
+    backend)
+      shift
+      if [[ "${PROFILE}" != "sub2api" ]]; then
+        die "backend only applies to profile: sub2api"
+      fi
+      run_backend "${@:-status}"
+      ;;
+    serve)
+      shift
+      ensure_backend_started
+      echo "codex profile ${PROFILE} is ready"
+      ;;
+    stop)
+      shift
+      stop_backend_if_needed
+      echo "codex profile ${PROFILE} stopped"
+      ;;
+    status)
+      shift
+      load_profile_vars
+      if [[ "${PROFILE}" == "sub2api" && -x "${SUB2API_CTL}" ]]; then
+        run_backend status || true
+      fi
+      echo "codex profile=${PROFILE} base_url=${PROFILE_BASE_URL}"
+      ;;
+    logs)
+      shift
+      if [[ "${PROFILE}" != "sub2api" ]]; then
+        die "logs only applies to profile: sub2api"
+      fi
+      run_backend logs
+      ;;
+    env)
+      shift
+      load_profile_vars
+      echo "PROFILE=${PROFILE}"
+      echo "BASE_URL=${PROFILE_BASE_URL}"
+      echo "MODEL=${PROFILE_MODEL}"
+      echo "ENV_KEY=${PROFILE_ENV_KEY}"
+      ;;
+    prepare)
+      shift
+      load_profile_vars
+      cat <<JSON
+{
+  "profile": "${PROFILE}",
+  "base_url": "${PROFILE_BASE_URL}",
+  "model": "${PROFILE_MODEL}",
+  "env_key": "${PROFILE_ENV_KEY}"
+}
+JSON
+      ;;
+    *)
+      ensure_backend_started
+      load_profile_vars
+
+      local jq_profile
+      local jq_model
+      local jq_reasoning
+      local jq_provider_name
+      local jq_base_url
+      local jq_wire_api
+      local jq_env_key
+      local jq_requires_auth
+      jq_profile="$(json_quote "${PROFILE}")"
+      jq_model="$(json_quote "${PROFILE_MODEL}")"
+      jq_reasoning="$(json_quote "${PROFILE_REASONING}")"
+      jq_provider_name="$(json_quote "${PROFILE_PROVIDER_NAME}")"
+      jq_base_url="$(json_quote "${PROFILE_BASE_URL}")"
+      jq_wire_api="$(json_quote "${PROFILE_WIRE_API}")"
+      jq_env_key="$(json_quote "${PROFILE_ENV_KEY}")"
+      jq_requires_auth="${PROFILE_REQUIRES_OPENAI_AUTH}"
+
+      local -a codex_args
+      codex_args=(
+        -c 'mcp_servers={}'
+        -c "model_provider=${jq_profile}"
+        -c "model_providers.${PROFILE}.name=${jq_provider_name}"
+        -c "model_providers.${PROFILE}.base_url=${jq_base_url}"
+        -c "model_providers.${PROFILE}.wire_api=${jq_wire_api}"
+        -c "model_providers.${PROFILE}.requires_openai_auth=${jq_requires_auth}"
+        -c "model_providers.${PROFILE}.env_key=${jq_env_key}"
+        -c "model=${jq_model}"
+      )
+
+      if [[ -n "${PROFILE_REASONING}" ]]; then
+        codex_args+=( -c "model_reasoning_effort=${jq_reasoning}" )
+      fi
+
+      if [[ -n "${PROFILE_API_KEY}" ]]; then
+        export OPENAI_API_KEY="${PROFILE_API_KEY}"
+      fi
+
+      exec codex "${codex_args[@]}" "$@"
+      ;;
+  esac
+}
+
+ENTRY_NAME="$(basename "$0")"
+CLIENT="claude"
+
+if [[ "$ENTRY_NAME" == "codex-switch" ]]; then
+  CLIENT="codex"
+elif [[ "$ENTRY_NAME" == "agent-switch" ]]; then
+  CLIENT="claude"
+fi
+
+if [[ $# -gt 0 ]] && is_client "$1"; then
+  CLIENT="$1"
+  shift
+fi
+
+if [[ $# -gt 0 ]] && [[ "$1" == "list" ]]; then
+  list_profiles
+  exit 0
+fi
+
+if [[ $# -gt 0 ]] && [[ "$1" == "balance" || "$1" == "quota" ]]; then
+  shift
+  run_balance "$@"
+fi
+
+if [[ $# -gt 0 ]] && [[ "$1" == "balance-login" || "$1" == "quota-login" ]]; then
+  shift
+  run_balance_login "$@"
+  exit 0
+fi
+
+PROFILE=""
+if [[ $# -gt 0 ]] && is_profile "$1"; then
+  PROFILE="$1"
+  shift
+fi
+if [[ -z "${PROFILE}" ]]; then
+  PROFILE="$(default_profile)"
+fi
+PORT="$(port_for_profile "$PROFILE")"
+
+if [[ "$CLIENT" == "claude" ]]; then
+  run_claude "${@:-}"
+else
+  run_codex "${@:-}"
+fi

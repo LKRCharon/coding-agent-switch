@@ -1,0 +1,17 @@
+# secrets
+.env
+.env.*
+!.env.example
+profiles/*/auth.json
+
+# runtime and local state
+gateway/runtime/
+!gateway/runtime/.gitkeep
+gateway/.venv/
+*.log
+*.pid
+
+# caches
+__pycache__/
+*.pyc
+.DS_Store

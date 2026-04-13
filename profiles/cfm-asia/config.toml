@@ -1,0 +1,15 @@
+# codex-for-me (fallback for CN regions)
+model_provider = "cfm-asia"
+model = "gpt-5.4"
+review_model = "gpt-5.4"
+model_reasoning_effort = "high"
+
+[model_providers.cfm-asia]
+name = "cfm-asia"
+base_url = "https://hello.vangularcode.asia/v1"
+wire_api = "responses"
+requires_openai_auth = true
+env_key = "CFM_API_KEY"
+
+[features]
+multi_agent = true
