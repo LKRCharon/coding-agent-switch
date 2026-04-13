@@ -42,19 +42,15 @@ Usage:
 
 Profiles:
   native   -> claude/codex native mode (no gateway)
-  sub2api  -> default port 4020 (local sub2api backend)
-  ttapi    -> default port 4020
-  fox      -> default port 4011
-  cfm      -> default port 4030 (codex-for-me primary endpoint)
-  cfm-asia -> default port 4031 (codex-for-me fallback endpoint)
+  provider -> default port 4030 (generic provider endpoint)
 
 Examples:
   ./bin/agent-switch list
-  ./bin/agent-switch codex cfm exec "Reply with exactly OK."
+  ./bin/agent-switch codex provider exec "Reply with exactly OK."
   ./bin/agent-switch claude native
-  ./bin/agent-switch claude cfm -p "Reply with exactly OK."
-  ./bin/agent-switch balance cfm --json
-  ./bin/agent-switch balance-login cfm --username your_name --prompt-password
+  ./bin/agent-switch claude provider -p "Reply with exactly OK."
+  ./bin/agent-switch balance provider --json
+  ./bin/agent-switch balance-login provider --username your_name --prompt-password
 USAGE
 }
 
@@ -81,11 +77,6 @@ list_profiles() {
 }
 
 default_profile() {
-  if [[ -d "${PROFILES_ROOT}/sub2api" ]]; then
-    echo "sub2api"
-    return
-  fi
-
   local first
   first="$(find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | head -n 1)"
   if [[ -n "${first}" ]]; then
@@ -98,11 +89,7 @@ default_profile() {
 
 port_for_profile() {
   case "$1" in
-    sub2api) echo "4020" ;;
-    ttapi) echo "4020" ;;
-    fox) echo "4011" ;;
-    cfm) echo "4030" ;;
-    cfm-asia) echo "4031" ;;
+    provider) echo "4030" ;;
     *) echo "4040" ;;
   esac
 }
@@ -191,7 +178,7 @@ run_balance() {
 
 token_env_key_for_provider() {
   case "$1" in
-    cfm|cfm-asia) echo "CFM_AUTH_TOKEN" ;;
+    provider) echo "PROVIDER_AUTH_TOKEN" ;;
     *) echo "${1^^}_AUTH_TOKEN" ;;
   esac
 }

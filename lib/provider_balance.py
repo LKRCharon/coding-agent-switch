@@ -22,16 +22,16 @@ from typing import Any
 
 
 PROVIDERS: dict[str, dict[str, Any]] = {
-    "cfm": {
-        "display_name": "codex-for-me",
-        "web_base": "https://codex-for.me",
+    "provider": {
+        "display_name": "provider",
+        "web_base": "https://example.com",
         "api_prefix": "/web/api/v1",
         "login_endpoint": "/users/login",
         "summary_endpoint": "/users/summary",
         "usage_endpoint": "/users/usage-stats",
-        "token_env": ["CFM_AUTH_TOKEN", "CODEX_FOR_ME_AUTH_TOKEN"],
-        "username_env": ["CFM_USERNAME", "CODEX_FOR_ME_USERNAME"],
-        "password_env": ["CFM_PASSWORD", "CODEX_FOR_ME_PASSWORD"],
+        "token_env": ["PROVIDER_AUTH_TOKEN"],
+        "username_env": ["PROVIDER_USERNAME"],
+        "password_env": ["PROVIDER_PASSWORD"],
     }
 }
 
@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="provider-balance",
         description="Fetch month fee / remaining budget / usage snapshot for supported providers",
     )
-    parser.add_argument("provider", choices=sorted(PROVIDERS.keys()), help="provider key, e.g. cfm")
+    parser.add_argument("provider", choices=sorted(PROVIDERS.keys()), help="provider key, e.g. provider")
     parser.add_argument("--base-url", default="", help="override provider web base URL")
 
     auth = parser.add_argument_group("auth")
@@ -207,9 +207,9 @@ def resolve_auth(args: argparse.Namespace, provider: dict[str, Any]) -> tuple[st
         password = getpass.getpass("Provider password: ")
 
     if not username:
-        _fail("missing auth: provide --token or --username (or set CFM_USERNAME)")
+        _fail("missing auth: provide --token or --username (or set PROVIDER_USERNAME)")
     if not password:
-        _fail("missing auth: provide --token or --password/--password-stdin/--prompt-password (or set CFM_PASSWORD)")
+        _fail("missing auth: provide --token or --password/--password-stdin/--prompt-password (or set PROVIDER_PASSWORD)")
 
     return login_for_token(provider, args.base_url, username, password), "login"
 

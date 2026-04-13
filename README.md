@@ -17,7 +17,6 @@ CLI-first switcher for coding agents.
 - 兼容入口：`bin/claude-switch`、`bin/codex-switch`
 - 网关组件：`gateway/claude-gateway-switch`
 - 配置模板：`profiles/*/config.toml` + `auth.json.template`
-- 余额查询（可选）：`balance` / `balance-login`（当前内置 cfm）
 
 ## 目录结构
 
@@ -33,11 +32,7 @@ coding-agent-switch/
 │   └── runtime/
 ├── lib/provider_balance.py
 ├── profiles/
-│   ├── cfm/
-│   ├── cfm-asia/
-│   ├── fox/
-│   ├── ttapi/
-│   └── sub2api/
+│   └── provider/
 ├── .env.example
 └── .gitignore
 ```
@@ -58,7 +53,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-2. 在 `.env` 里填入你需要的 key（比如 `CFM_API_KEY`）。
+2. 在 `.env` 里填入你需要的 key（比如 `PROVIDER_API_KEY`）。
 
 3. 安装网关依赖（LiteLLM）：
 
@@ -77,12 +72,12 @@ chmod 600 .env
 ### 1) Codex 切换 provider
 
 ```bash
-# 直接以 cfm profile 启动 codex
-./bin/agent-switch codex cfm
+# 直接以 provider profile 启动 codex
+./bin/agent-switch codex provider
 
 # 仅查看当前 profile 解析结果
-./bin/agent-switch codex cfm prepare
-./bin/agent-switch codex cfm env
+./bin/agent-switch codex provider prepare
+./bin/agent-switch codex provider env
 ```
 
 ### 2) Claude 切换底层
@@ -91,27 +86,20 @@ chmod 600 .env
 # 原生 Claude（不走网关）
 ./bin/agent-switch claude native
 
-# 走 cfm profile（经 LiteLLM 代理）
-./bin/agent-switch claude cfm
+# 走 provider profile（经 LiteLLM 代理）
+./bin/agent-switch claude provider
 
 # 单次提示
-./bin/agent-switch claude cfm -p "Reply with exactly OK."
+./bin/agent-switch claude provider -p "Reply with exactly OK."
 ```
 
 ### 3) 网关运维
 
 ```bash
-./bin/agent-switch claude cfm serve
-./bin/agent-switch claude cfm status
-./bin/agent-switch claude cfm logs
-./bin/agent-switch claude cfm stop
-```
-
-### 4) cfm 余额查询（可选）
-
-```bash
-./bin/agent-switch balance cfm --json
-./bin/agent-switch balance-login cfm --username your_name --prompt-password
+./bin/agent-switch claude provider serve
+./bin/agent-switch claude provider status
+./bin/agent-switch claude provider logs
+./bin/agent-switch claude provider stop
 ```
 
 ## 配置方式（推荐）
@@ -119,7 +107,7 @@ chmod 600 .env
 优先使用 `.env` 管理 key，不把密钥写进仓库。
 
 - `profiles/*/config.toml`：放 base_url、model、env_key
-- `.env`：放真实 key（如 `CFM_API_KEY=...`）
+- `.env`：放真实 key（如 `PROVIDER_API_KEY=...`）
 
 如果你更习惯按 profile 独立放 key，也可以在 `profiles/<name>/auth.json` 放：
 
@@ -139,8 +127,8 @@ chmod 600 .env
 2) 按我提供的 key 填写 .env
 3) 执行 ./gateway/claude-gateway-switch install
 4) 运行 ./bin/agent-switch list 验证 profile
-5) 运行 ./bin/agent-switch codex cfm prepare 验证 codex provider
-6) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude cfm prepare
+5) 运行 ./bin/agent-switch codex provider prepare 验证 codex provider
+6) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude provider prepare
 7) 不要把 .env、profiles/*/auth.json、gateway/runtime/ 提交到 git
 ```
 
@@ -155,3 +143,12 @@ chmod 600 .env
 
 这是 CLI 工具，定位是 GUI 工具（如 cc switch）的脚本化补位，不是 GUI 替代品。
 
+## 推荐站点
+
+如果你在找可用的中转站，可以看看：
+
+- FoxCode: <https://foxcode.rjj.cc/auth/register?aff=4YNPP>
+
+### 利益披露
+
+通过上面的邀请链接注册的用户，在平台完成兑换并产生消费后，项目维护者可能获得平台提供的相应奖励。
