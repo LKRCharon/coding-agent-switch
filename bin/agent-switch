@@ -8,6 +8,7 @@ PROJECT_ROOT="$(cd "${BIN_DIR}/.." && pwd)"
 GATEWAY_DIR="${PROJECT_ROOT}/gateway"
 CLAUDE_GATEWAY_SWITCH="${GATEWAY_DIR}/claude-gateway-switch"
 PROFILES_ROOT="${PROJECT_ROOT}/profiles"
+PROFILES_LOCAL_ROOT="${PROFILES_LOCAL_ROOT:-${PROJECT_ROOT}/profiles-local}"
 BALANCE_HELPER="${PROJECT_ROOT}/lib/provider_balance.py"
 ROOT_ENV_FILE="${ROOT_ENV_FILE:-${PROJECT_ROOT}/.env}"
 SUB2API_CTL="${SUB2API_CTL:-${PROJECT_ROOT}/sub2api-local/sub2api-localctl}"
@@ -35,20 +36,26 @@ usage() {
   cat <<'USAGE'
 Usage:
   agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|prepare|backend] [extra args...]
+  agent-switch codex [profile] persist
   agent-switch [claude|codex] [profile] [client args...]
   agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
   agent-switch balance-login <provider> [--username USER --prompt-password]
+  agent-switch profile list
+  agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]
   agent-switch list
 
 Profiles:
   native   -> claude/codex native mode (no gateway)
   provider -> default port 4030 (generic provider endpoint)
+  local profiles can be stored under profiles-local/ (ignored by git)
 
 Examples:
   ./bin/agent-switch list
   ./bin/agent-switch codex provider exec "Reply with exactly OK."
+  ./bin/agent-switch codex ttapi persist
   ./bin/agent-switch claude native
   ./bin/agent-switch claude provider -p "Reply with exactly OK."
+  ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY
   ./bin/agent-switch balance provider --json
   ./bin/agent-switch balance-login provider --username your_name --prompt-password
 USAGE
@@ -68,17 +75,44 @@ is_client() {
 
 is_profile() {
   [[ "$1" == "native" ]] && return 0
-  [[ -d "${PROFILES_ROOT}/$1" ]]
+  [[ -n "$(resolve_profile_dir "$1")" ]]
+}
+
+resolve_profile_dir() {
+  local profile="$1"
+  if [[ -d "${PROFILES_LOCAL_ROOT}/${profile}" ]]; then
+    echo "${PROFILES_LOCAL_ROOT}/${profile}"
+    return 0
+  fi
+  if [[ -d "${PROFILES_ROOT}/${profile}" ]]; then
+    echo "${PROFILES_ROOT}/${profile}"
+    return 0
+  fi
+  return 1
 }
 
 list_profiles() {
   echo "native"
-  find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+  {
+    if [[ -d "${PROFILES_ROOT}" ]]; then
+      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+    fi
+    if [[ -d "${PROFILES_LOCAL_ROOT}" ]]; then
+      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+    fi
+  } | sort -u
 }
 
 default_profile() {
   local first
-  first="$(find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | head -n 1)"
+  first="$({
+    if [[ -d "${PROFILES_ROOT}" ]]; then
+      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+    fi
+    if [[ -d "${PROFILES_LOCAL_ROOT}" ]]; then
+      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+    fi
+  } | sort -u | head -n 1)"
   if [[ -n "${first}" ]]; then
     echo "${first}"
     return
@@ -116,7 +150,10 @@ json_quote() {
 }
 
 load_profile_vars() {
-  eval "$("${PYTHON_BIN}" - "$PROFILES_ROOT" "$PROFILE" <<'PY'
+  local profile_dir
+  profile_dir="$(resolve_profile_dir "${PROFILE}")" || die "unknown profile: ${PROFILE}"
+
+  eval "$("${PYTHON_BIN}" - "$profile_dir" "$PROFILE" <<'PY'
 import json
 import os
 import shlex
@@ -127,10 +164,10 @@ except ModuleNotFoundError:
     import tomli as tomllib
 from pathlib import Path
 
-profiles_root = Path(sys.argv[1])
+profile_dir = Path(sys.argv[1])
 profile = sys.argv[2]
-cfg_path = profiles_root / profile / "config.toml"
-auth_path = profiles_root / profile / "auth.json"
+cfg_path = profile_dir / "config.toml"
+auth_path = profile_dir / "auth.json"
 
 if not cfg_path.is_file():
     raise SystemExit(f"missing profile config: {cfg_path}")
@@ -169,6 +206,174 @@ emit("PROFILE_ENV_KEY", env_key)
 emit("PROFILE_REQUIRES_OPENAI_AUTH", "true" if requires_auth else "false")
 PY
 )"
+}
+
+persist_codex_profile() {
+  [[ "${PROFILE}" != "native" ]] || die "persist does not apply to native"
+  load_profile_vars
+  [[ -n "${PROFILE_API_KEY}" ]] || die "No API key found for ${PROFILE}. Put it in ${ROOT_ENV_FILE} (key: ${PROFILE_ENV_KEY}) or profiles-local/${PROFILE}/auth.json"
+
+  local codex_home
+  local config_path
+  local auth_path
+  codex_home="${CODEX_HOME:-${HOME}/.codex}"
+  config_path="${codex_home}/config.toml"
+  auth_path="${codex_home}/auth.json"
+
+  "${PYTHON_BIN}" - "$config_path" "$auth_path" "$PROFILE" "$PROFILE_MODEL" "$PROFILE_REASONING" "$PROFILE_PROVIDER_NAME" "$PROFILE_BASE_URL" "$PROFILE_WIRE_API" "$PROFILE_REQUIRES_OPENAI_AUTH" "$PROFILE_API_KEY" <<'PY'
+from __future__ import annotations
+import json
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+import toml
+
+config_path = Path(sys.argv[1])
+auth_path = Path(sys.argv[2])
+profile = sys.argv[3]
+model = sys.argv[4]
+reasoning = sys.argv[5]
+provider_name = sys.argv[6]
+base_url = sys.argv[7]
+wire_api = sys.argv[8]
+requires_auth = sys.argv[9].lower() == "true"
+api_key = sys.argv[10]
+
+config_path.parent.mkdir(parents=True, exist_ok=True)
+auth_path.parent.mkdir(parents=True, exist_ok=True)
+
+ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+cfg: dict = {}
+if config_path.exists() and config_path.stat().st_size > 0:
+    cfg = toml.load(config_path)
+    shutil.copy2(config_path, config_path.with_name(f"{config_path.name}.bak.{ts}"))
+
+providers = cfg.get("model_providers")
+if not isinstance(providers, dict):
+    providers = {}
+providers["agent_switch"] = {
+    "name": provider_name or profile,
+    "base_url": base_url,
+    "wire_api": wire_api or "responses",
+    "requires_openai_auth": requires_auth,
+    "env_key": "OPENAI_API_KEY",
+}
+cfg["model_provider"] = "agent_switch"
+cfg["model_providers"] = providers
+if model:
+    cfg["model"] = model
+if reasoning:
+    cfg["model_reasoning_effort"] = reasoning
+
+config_path.write_text(toml.dumps(cfg), encoding="utf-8")
+
+auth: dict = {}
+if auth_path.exists() and auth_path.stat().st_size > 0:
+    auth = json.loads(auth_path.read_text(encoding="utf-8"))
+    shutil.copy2(auth_path, auth_path.with_name(f"{auth_path.name}.bak.{ts}"))
+auth["OPENAI_API_KEY"] = api_key
+auth_path.write_text(json.dumps(auth, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+
+  echo "Persisted codex profile=${PROFILE} to ${config_path} (provider key: agent_switch)"
+  echo "Updated ${auth_path} OPENAI_API_KEY to active profile key"
+}
+
+run_profile() {
+  local sub="${1:-}"
+  case "$sub" in
+    ""|help|-h|--help)
+      cat <<'USAGE'
+Usage:
+  agent-switch profile list
+  agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]
+USAGE
+      ;;
+    list)
+      list_profiles
+      ;;
+    create)
+      shift || true
+      local name="${1:-}"
+      [[ -n "${name}" ]] || die "Usage: agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]"
+      shift || true
+      [[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "profile name must match: [a-z0-9][a-z0-9-]*"
+
+      local base_url=""
+      local env_key=""
+      local model="gpt-5.4"
+      local reasoning="high"
+      local wire_api="responses"
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --base-url)
+            base_url="${2:-}"
+            shift 2
+            ;;
+          --env-key)
+            env_key="${2:-}"
+            shift 2
+            ;;
+          --model)
+            model="${2:-}"
+            shift 2
+            ;;
+          --reasoning)
+            reasoning="${2:-}"
+            shift 2
+            ;;
+          --wire-api)
+            wire_api="${2:-}"
+            shift 2
+            ;;
+          *)
+            die "unknown option: $1"
+            ;;
+        esac
+      done
+
+      [[ -n "${base_url}" ]] || die "--base-url is required"
+      if [[ -z "${env_key}" ]]; then
+        env_key="$(echo "${name}" | tr '[:lower:]-' '[:upper:]_')_API_KEY"
+      fi
+
+      local profile_dir="${PROFILES_LOCAL_ROOT}/${name}"
+      mkdir -p "${profile_dir}"
+      cat > "${profile_dir}/config.toml" <<EOF
+# local profile: ${name}
+model_provider = "${name}"
+model = "${model}"
+model_reasoning_effort = "${reasoning}"
+
+[model_providers.${name}]
+name = "${name}"
+base_url = "${base_url}"
+wire_api = "${wire_api}"
+requires_openai_auth = true
+env_key = "${env_key}"
+
+[features]
+multi_agent = true
+EOF
+
+      if [[ ! -f "${profile_dir}/auth.json.template" ]]; then
+        cat > "${profile_dir}/auth.json.template" <<'EOF'
+{
+  "OPENAI_API_KEY": "your_api_key_here"
+}
+EOF
+      fi
+      echo "Created local profile: ${name}"
+      echo "Path: ${profile_dir}"
+      echo "Set key in ${ROOT_ENV_FILE}: ${env_key}=..."
+      ;;
+    *)
+      die "unknown profile subcommand: ${sub}"
+      ;;
+  esac
 }
 
 run_balance() {
@@ -407,6 +612,10 @@ run_codex() {
       echo "MODEL=${PROFILE_MODEL}"
       echo "ENV_KEY=${PROFILE_ENV_KEY}"
       ;;
+    persist)
+      shift
+      persist_codex_profile
+      ;;
     prepare)
       shift
       load_profile_vars
@@ -492,6 +701,12 @@ fi
 if [[ $# -gt 0 ]] && [[ "$1" == "balance-login" || "$1" == "quota-login" ]]; then
   shift
   run_balance_login "$@"
+  exit 0
+fi
+
+if [[ $# -gt 0 ]] && [[ "$1" == "profile" ]]; then
+  shift
+  run_profile "${1:-}" "${@:2}"
   exit 0
 fi
 

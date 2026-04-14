@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 profiles/*/auth.json
+profiles-local/
 
 # runtime and local state
 gateway/runtime/*

@@ -17,6 +17,7 @@ CLI-first switcher for coding agents.
 - 兼容入口：`bin/claude-switch`、`bin/codex-switch`
 - 网关组件：`gateway/claude-gateway-switch`
 - 配置模板：`profiles/*/config.toml` + `auth.json.template`
+- 本地私有 profile：`profiles-local/*`（默认不进 git）
 
 ## 目录结构
 
@@ -33,6 +34,7 @@ coding-agent-switch/
 ├── lib/provider_balance.py
 ├── profiles/
 │   └── provider/
+├── profiles-local/           # 本地私有，不提交
 ├── .env.example
 └── .gitignore
 ```
@@ -69,15 +71,44 @@ chmod 600 .env
 
 ## 常用命令
 
+### 0) 多 profile（ttapi / fox）本地创建（不进 git）
+
+```bash
+# 创建 ttapi（写到 profiles-local/ttapi）
+./bin/agent-switch profile create ttapi \
+  --base-url https://your-ttapi-endpoint/v1 \
+  --env-key TTAPI_API_KEY
+
+# 创建 fox（写到 profiles-local/fox）
+./bin/agent-switch profile create fox \
+  --base-url https://your-fox-endpoint/v1 \
+  --env-key FOX_API_KEY
+
+# 查看可用 profile（包含 profiles-local）
+./bin/agent-switch profile list
+```
+
+在 `.env` 中放 key（示例）：
+
+```bash
+TTAPI_API_KEY=...
+FOX_API_KEY=...
+```
+
 ### 1) Codex 切换 provider
 
 ```bash
-# 直接以 provider profile 启动 codex
-./bin/agent-switch codex provider
+# 临时切换（只对当前命令生效）
+./bin/agent-switch codex ttapi
+./bin/agent-switch codex fox
 
 # 仅查看当前 profile 解析结果
-./bin/agent-switch codex provider prepare
-./bin/agent-switch codex provider env
+./bin/agent-switch codex ttapi prepare
+./bin/agent-switch codex ttapi env
+
+# 持久切换（修改 ~/.codex/config.toml + ~/.codex/auth.json）
+# 适合让 Codex VSCode 扩展也跟随使用同一 provider
+./bin/agent-switch codex ttapi persist
 ```
 
 ### 2) Claude 切换底层
@@ -86,20 +117,20 @@ chmod 600 .env
 # 原生 Claude（不走网关）
 ./bin/agent-switch claude native
 
-# 走 provider profile（经 LiteLLM 代理）
-./bin/agent-switch claude provider
+# 走 profile（经 LiteLLM 代理）
+./bin/agent-switch claude ttapi
 
 # 单次提示
-./bin/agent-switch claude provider -p "Reply with exactly OK."
+./bin/agent-switch claude ttapi -p "Reply with exactly OK."
 ```
 
 ### 3) 网关运维
 
 ```bash
-./bin/agent-switch claude provider serve
-./bin/agent-switch claude provider status
-./bin/agent-switch claude provider logs
-./bin/agent-switch claude provider stop
+./bin/agent-switch claude ttapi serve
+./bin/agent-switch claude ttapi status
+./bin/agent-switch claude ttapi logs
+./bin/agent-switch claude ttapi stop
 ```
 
 ## 配置方式（推荐）
@@ -107,6 +138,7 @@ chmod 600 .env
 优先使用 `.env` 管理 key，不把密钥写进仓库。
 
 - `profiles/*/config.toml`：放 base_url、model、env_key
+- `profiles-local/*/config.toml`：放你的私有 provider（ttapi/fox），默认忽略提交
 - `.env`：放真实 key（如 `PROVIDER_API_KEY=...`）
 
 如果你更习惯按 profile 独立放 key，也可以在 `profiles/<name>/auth.json` 放：
@@ -127,15 +159,17 @@ chmod 600 .env
 2) 按我提供的 key 填写 .env
 3) 执行 ./gateway/claude-gateway-switch install
 4) 运行 ./bin/agent-switch list 验证 profile
-5) 运行 ./bin/agent-switch codex provider prepare 验证 codex provider
-6) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude provider prepare
-7) 不要把 .env、profiles/*/auth.json、gateway/runtime/ 提交到 git
+5) 运行 ./bin/agent-switch codex ttapi prepare 验证 codex provider
+6) 运行 ./bin/agent-switch codex ttapi persist（需要持久切换时）
+7) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude ttapi prepare
+8) 不要把 .env、profiles-local/、profiles/*/auth.json、gateway/runtime/ 提交到 git
 ```
 
 ## 安全建议
 
 - 只提交模板，不提交真实 key/token。
 - `.env`、`auth.json`、runtime 日志都应本地保存。
+- `profiles-local/` 只用于本机私有 profile，不进 git。
 - 推荐把 `gateway` 仅绑定到本地回环地址（默认本地端口）。
 - 升级后先跑 `prepare/status` 再切换正式流量。
 
