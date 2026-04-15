@@ -27,7 +27,13 @@ CLI-first switcher for coding agents.
 - 兼容入口：`bin/claude-switch`、`bin/codex-switch`
 - 网关组件：`gateway/claude-gateway-switch`
 - 配置模板：`profiles/*/config.toml` + `auth.json.template`
-- 本地私有 profile：`profiles-local/*`（默认不进 git）
+- 本地私有 profile：`profiles-local/*`（默认不进 git，Codex/Claude 都支持）
+
+## 当前约定
+
+- 以后以这个仓库 `coding-agent-switch` 为唯一准，不再使用旧的 `claude-switch` / `codex-switch.legacy` / `claude-gateway-switch`
+- 常用私有 profile 可以直接放到 `profiles-local/*`
+- 当前本机已经接入过的常见 profile 示例：`cfm`、`ttapi`
 
 ## 目录结构
 
@@ -64,8 +70,8 @@ coding-agent-switch/
 ```
 
 它会自动完成：
-- 初始化 `.env`（不存在时从 `.env.example` 复制）
-- 安装 `gateway/.venv` 和 LiteLLM 依赖
+- 初始化 `.env`（不存在时从 `.env.example` 复制，作为可选 fallback）
+- 安装 `gateway/.venv`、LiteLLM 依赖和 `toml` 依赖
 - 把 `agent-switch` / `claude-switch` / `codex-switch` 链接到 `~/.local/bin`
 
 ## 快速开始
@@ -78,7 +84,7 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-2. 在 `.env` 里填入你需要的 key（比如 `PROVIDER_API_KEY`）。
+2. 推荐在各 profile 的 `auth.json` 中填写 key；`.env` 只作为兼容 fallback。
 
 3. 安装网关依赖（LiteLLM）：
 
@@ -94,43 +100,61 @@ chmod 600 .env
 
 ## 常用命令
 
-### 0) 多 profile（ttapi / fox）本地创建（不进 git）
+### 0) 多 profile（cfm / ttapi / fox）本地创建（不进 git）
+
+已验证的常用示例：
+
+```bash
+# 创建 cfm（写到 profiles-local/cfm）
+./bin/agent-switch profile create cfm \
+  --base-url https://api-vip.codex-for.me/v1 \
+  --env-key CFM_API_KEY \
+  --api-key your_cfm_key
+```
 
 ```bash
 # 创建 ttapi（写到 profiles-local/ttapi）
 ./bin/agent-switch profile create ttapi \
-  --base-url https://your-ttapi-endpoint/v1 \
-  --env-key TTAPI_API_KEY
+  --base-url https://w.ciykj.cn \
+  --env-key TTAPI_API_KEY \
+  --api-key your_ttapi_key
 
 # 创建 fox（写到 profiles-local/fox）
 ./bin/agent-switch profile create fox \
   --base-url https://your-fox-endpoint/v1 \
-  --env-key FOX_API_KEY
+  --env-key FOX_API_KEY \
+  --api-key your_fox_key
 
 # 查看可用 profile（包含 profiles-local）
 ./bin/agent-switch profile list
 ```
 
-在 `.env` 中放 key（示例）：
+推荐放到 `profiles-local/<name>/auth.json`：
 
-```bash
-TTAPI_API_KEY=...
-FOX_API_KEY=...
+```json
+{
+  "OPENAI_API_KEY": "your_api_key_here"
+}
 ```
+
+`.env` 里的 `CFM_API_KEY` / `TTAPI_API_KEY` / `FOX_API_KEY` 仍可作为兼容 fallback，但不再是首选。
 
 ### 1) Codex 切换 provider
 
 ```bash
 # 临时切换（只对当前命令生效）
+./bin/agent-switch codex cfm
 ./bin/agent-switch codex ttapi
 ./bin/agent-switch codex fox
 
 # 仅查看当前 profile 解析结果
+./bin/agent-switch codex cfm prepare
 ./bin/agent-switch codex ttapi prepare
 ./bin/agent-switch codex ttapi env
 
 # 持久切换（修改 ~/.codex/config.toml + ~/.codex/auth.json）
 # 适合让 Codex VSCode 扩展也跟随使用同一 provider
+./bin/agent-switch codex cfm persist
 ./bin/agent-switch codex ttapi persist
 ```
 
@@ -140,7 +164,8 @@ FOX_API_KEY=...
 # 原生 Claude（不走网关）
 ./bin/agent-switch claude native
 
-# 走 profile（经 LiteLLM 代理）
+# 走 profile（经 LiteLLM 代理，支持 profiles 和 profiles-local）
+./bin/agent-switch claude cfm
 ./bin/agent-switch claude ttapi
 
 # 单次提示
@@ -158,13 +183,14 @@ FOX_API_KEY=...
 
 ## 配置方式（推荐）
 
-优先使用 `.env` 管理 key，不把密钥写进仓库。
+优先使用各 profile 自己的 `auth.json` 管理 key，不把密钥写进仓库。
 
 - `profiles/*/config.toml`：放 base_url、model、env_key
-- `profiles-local/*/config.toml`：放你的私有 provider（ttapi/fox），默认忽略提交
-- `.env`：放真实 key（如 `PROVIDER_API_KEY=...`）
+- `profiles-local/*/config.toml`：放你的私有 provider（如 cfm/ttapi/fox），默认忽略提交
+- `profiles-local/*/auth.json`：放真实 key，推荐使用
+- `.env`：兼容 fallback（如 `CFM_API_KEY=...`）
 
-如果你更习惯按 profile 独立放 key，也可以在 `profiles/<name>/auth.json` 放：
+`auth.json` 示例：
 
 ```json
 {
@@ -172,26 +198,30 @@ FOX_API_KEY=...
 }
 ```
 
-`auth.json` 已在 `.gitignore` 里默认忽略。
+`auth.json` 已在 `.gitignore` 里默认忽略。运行时优先级是：
+
+1. `profiles-local/<name>/auth.json`
+2. profile 配置里的 `env_key` 对应环境变量
+3. 通用 `OPENAI_API_KEY`
 
 ## 给 AI Coding 助手的部署提示词（可直接贴）
 
 ```text
 请在本机部署 coding-agent-switch：
 1) 复制 .env.example 为 .env 并设置 chmod 600
-2) 按我提供的 key 填写 .env
+2) 创建 profile：./bin/agent-switch profile create <name> --base-url ... --env-key ... --api-key ...
 3) 执行 ./gateway/claude-gateway-switch install
 4) 运行 ./bin/agent-switch list 验证 profile
-5) 运行 ./bin/agent-switch codex ttapi prepare 验证 codex provider
-6) 运行 ./bin/agent-switch codex ttapi persist（需要持久切换时）
-7) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude ttapi prepare
+5) 运行 ./bin/agent-switch codex cfm prepare 或 ./bin/agent-switch codex ttapi prepare 验证 codex provider
+6) 运行 ./bin/agent-switch codex cfm persist（需要持久切换时）
+7) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude cfm prepare / ./bin/agent-switch claude ttapi prepare
 8) 不要把 .env、profiles-local/、profiles/*/auth.json、gateway/runtime/ 提交到 git
 ```
 
 ## 安全建议
 
 - 只提交模板，不提交真实 key/token。
-- `.env`、`auth.json`、runtime 日志都应本地保存。
+- `auth.json`、`.env`、runtime 日志都应本地保存。
 - `profiles-local/` 只用于本机私有 profile，不进 git。
 - 推荐把 `gateway` 仅绑定到本地回环地址（默认本地端口）。
 - 升级后先跑 `prepare/status` 再切换正式流量。

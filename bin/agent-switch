@@ -41,7 +41,7 @@ Usage:
   agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
   agent-switch balance-login <provider> [--username USER --prompt-password]
   agent-switch profile list
-  agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]
+  agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]
   agent-switch list
 
 Profiles:
@@ -55,7 +55,7 @@ Examples:
   ./bin/agent-switch codex ttapi persist
   ./bin/agent-switch claude native
   ./bin/agent-switch claude provider -p "Reply with exactly OK."
-  ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY
+  ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY --api-key ...
   ./bin/agent-switch balance provider --json
   ./bin/agent-switch balance-login provider --username your_name --prompt-password
 USAGE
@@ -253,14 +253,14 @@ if config_path.exists() and config_path.stat().st_size > 0:
 providers = cfg.get("model_providers")
 if not isinstance(providers, dict):
     providers = {}
-providers["agent_switch"] = {
+providers[profile] = {
     "name": provider_name or profile,
     "base_url": base_url,
     "wire_api": wire_api or "responses",
     "requires_openai_auth": requires_auth,
-    "env_key": "OPENAI_API_KEY",
 }
-cfg["model_provider"] = "agent_switch"
+providers.pop("agent_switch", None)
+cfg["model_provider"] = profile
 cfg["model_providers"] = providers
 if model:
     cfg["model"] = model
@@ -277,7 +277,7 @@ auth["OPENAI_API_KEY"] = api_key
 auth_path.write_text(json.dumps(auth, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
 
-  echo "Persisted codex profile=${PROFILE} to ${config_path} (provider key: agent_switch)"
+  echo "Persisted codex profile=${PROFILE} to ${config_path} (provider key: ${PROFILE})"
   echo "Updated ${auth_path} OPENAI_API_KEY to active profile key"
 }
 
@@ -288,7 +288,7 @@ run_profile() {
       cat <<'USAGE'
 Usage:
   agent-switch profile list
-  agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]
+  agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]
 USAGE
       ;;
     list)
@@ -297,12 +297,13 @@ USAGE
     create)
       shift || true
       local name="${1:-}"
-      [[ -n "${name}" ]] || die "Usage: agent-switch profile create <name> --base-url URL [--env-key KEY] [--model MODEL] [--reasoning LEVEL]"
+      [[ -n "${name}" ]] || die "Usage: agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]"
       shift || true
       [[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "profile name must match: [a-z0-9][a-z0-9-]*"
 
       local base_url=""
       local env_key=""
+      local api_key=""
       local model="gpt-5.4"
       local reasoning="high"
       local wire_api="responses"
@@ -315,6 +316,10 @@ USAGE
             ;;
           --env-key)
             env_key="${2:-}"
+            shift 2
+            ;;
+          --api-key)
+            api_key="${2:-}"
             shift 2
             ;;
           --model)
@@ -366,9 +371,29 @@ EOF
 }
 EOF
       fi
+
+      if [[ -n "${api_key}" ]]; then
+        "${PYTHON_BIN}" - "$profile_dir/auth.json" "$api_key" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+auth_path = Path(sys.argv[1])
+api_key = sys.argv[2]
+payload = {"OPENAI_API_KEY": api_key}
+auth_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+auth_path.chmod(0o600)
+PY
+      fi
+
       echo "Created local profile: ${name}"
       echo "Path: ${profile_dir}"
-      echo "Set key in ${ROOT_ENV_FILE}: ${env_key}=..."
+      if [[ -n "${api_key}" ]]; then
+        echo "Wrote ${profile_dir}/auth.json"
+      else
+        echo "Recommended: write ${profile_dir}/auth.json with OPENAI_API_KEY"
+        echo "Fallback also works via ${ROOT_ENV_FILE}: ${env_key}=..."
+      fi
       ;;
     *)
       die "unknown profile subcommand: ${sub}"
