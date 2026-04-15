@@ -11,6 +11,16 @@ CLI-first switcher for coding agents.
 
 本仓库仅包含模板和逻辑，不包含任何敏感数据。
 
+## 背景
+
+最初做这个工具很简单：官方的 Codex 和 Claude 成本不低，我自己买了几个 code 中转站来分担费用。  
+但现实问题是，日常使用里需要在不同 provider 之间来回切换，手动改配置非常繁琐，节奏也会被打断。
+
+另外还有一个很常见的情况：Codex 这边的中转额度有时候用不完，而 Claude 那边额度更紧张。  
+所以我把 Claude 的底层链路也改成可切换模式，让它在需要时可以走同一套 OpenAI 兼容 provider，把已有额度利用起来。
+
+整个项目的逻辑就是：用一套统一命令，把 Codex 和 Claude 的切换、配置和运行链路都整理成低摩擦流程，减少重复操作。
+
 ## 功能概览
 
 - 统一入口：`bin/agent-switch`
@@ -44,6 +54,19 @@ coding-agent-switch/
 - `claude` CLI
 - `codex` CLI
 - `python3`（建议 3.10+）
+
+## 一键安装
+
+在仓库根目录执行：
+
+```bash
+./install.sh
+```
+
+它会自动完成：
+- 初始化 `.env`（不存在时从 `.env.example` 复制）
+- 安装 `gateway/.venv` 和 LiteLLM 依赖
+- 把 `agent-switch` / `claude-switch` / `codex-switch` 链接到 `~/.local/bin`
 
 ## 快速开始
 
@@ -182,6 +205,7 @@ FOX_API_KEY=...
 如果你在找可用的中转站，可以看看：
 
 - FoxCode: <https://foxcode.rjj.cc/auth/register?aff=4YNPP>
+- Codex For Me: <https://codex-for.me/?invite=9608>
 
 ### 利益披露
 
