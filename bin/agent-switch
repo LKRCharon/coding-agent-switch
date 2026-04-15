@@ -37,6 +37,7 @@ usage() {
 Usage:
   agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|prepare|backend] [extra args...]
   agent-switch codex [profile] persist
+  agent-switch codex [profile] logout
   agent-switch [claude|codex] [profile] [client args...]
   agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
   agent-switch balance-login <provider> [--username USER --prompt-password]
@@ -53,6 +54,7 @@ Examples:
   ./bin/agent-switch list
   ./bin/agent-switch codex provider exec "Reply with exactly OK."
   ./bin/agent-switch codex ttapi persist
+  ./bin/agent-switch codex logout
   ./bin/agent-switch claude native
   ./bin/agent-switch claude provider -p "Reply with exactly OK."
   ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY --api-key ...
@@ -279,6 +281,10 @@ PY
 
   echo "Persisted codex profile=${PROFILE} to ${config_path} (provider key: ${PROFILE})"
   echo "Updated ${auth_path} OPENAI_API_KEY to active profile key"
+}
+
+logout_codex() {
+  exec codex logout "$@"
 }
 
 run_profile() {
@@ -640,6 +646,10 @@ run_codex() {
     persist)
       shift
       persist_codex_profile
+      ;;
+    logout)
+      shift
+      logout_codex "$@"
       ;;
     prepare)
       shift
