@@ -20,10 +20,40 @@ def eprint(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def load_profile_config(profiles_root: Path, profile: str) -> tuple[Path, dict, dict]:
-    profile_dir = profiles_root / profile
-    if not profile_dir.is_dir():
-        raise SystemExit(f"Profile not found: {profile}")
+def profile_search_roots(primary_root: Path, local_root: str | None) -> list[Path]:
+    roots = [primary_root]
+    if local_root:
+        roots.insert(0, Path(local_root))
+    return roots
+
+
+def resolve_profile_dir(profile: str, roots: list[Path]) -> Path:
+    for root in roots:
+        profile_dir = root / profile
+        if profile_dir.is_dir():
+            return profile_dir
+    raise SystemExit(f"Profile not found: {profile}")
+
+
+def iter_profile_dirs(roots: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    dirs: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for profile_dir in sorted(root.iterdir()):
+            if not profile_dir.is_dir():
+                continue
+            profile = profile_dir.name
+            if profile in seen:
+                continue
+            seen.add(profile)
+            dirs.append(profile_dir)
+    return dirs
+
+
+def load_profile_config(roots: list[Path], profile: str) -> tuple[Path, dict, dict]:
+    profile_dir = resolve_profile_dir(profile, roots)
 
     config_path = profile_dir / "config.toml"
     if not config_path.is_file():
@@ -181,13 +211,11 @@ def render_claude_settings(*, port: int, master_key: str, default_model: str, mi
 
 
 def command_list(args: argparse.Namespace) -> int:
-    profiles_root = Path(args.profiles_root)
-    for profile_dir in sorted(profiles_root.iterdir()):
-        if not profile_dir.is_dir():
-            continue
+    roots = profile_search_roots(Path(args.profiles_root), args.profiles_local_root)
+    for profile_dir in iter_profile_dirs(roots):
         profile = profile_dir.name
         try:
-            _, _, provider = load_profile_config(profiles_root, profile)
+            _, _, provider = load_profile_config(roots, profile)
             base_url = provider.get("base_url", "")
             print(f"{profile}\tresponses\t{base_url}")
         except SystemExit as exc:
@@ -196,9 +224,9 @@ def command_list(args: argparse.Namespace) -> int:
 
 
 def command_render(args: argparse.Namespace) -> int:
-    profiles_root = Path(args.profiles_root)
+    roots = profile_search_roots(Path(args.profiles_root), args.profiles_local_root)
     runtime_root = Path(args.runtime_root)
-    profile_dir, _, provider = load_profile_config(profiles_root, args.profile)
+    profile_dir, _, provider = load_profile_config(roots, args.profile)
     api_key, key_source = resolve_upstream_api_key(
         profile_dir=profile_dir, profile=args.profile, provider=provider
     )
@@ -259,10 +287,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--profiles-root", required=True)
+    list_parser.add_argument("--profiles-local-root", default="")
     list_parser.set_defaults(func=command_list)
 
     render_parser = subparsers.add_parser("render")
     render_parser.add_argument("--profiles-root", required=True)
+    render_parser.add_argument("--profiles-local-root", default="")
     render_parser.add_argument("--runtime-root", required=True)
     render_parser.add_argument("--profile", required=True)
     render_parser.add_argument("--model", default="gpt-5.4")
