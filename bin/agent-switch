@@ -38,6 +38,8 @@ Usage:
   agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|prepare|backend] [extra args...]
   agent-switch codex [profile] persist
   agent-switch codex [profile] logout
+  agent-switch codex native export-auth <name>
+  agent-switch codex native restore-auth <name>
   agent-switch [claude|codex] [profile] [client args...]
   agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
   agent-switch balance-login <provider> [--username USER --prompt-password]
@@ -55,6 +57,8 @@ Examples:
   ./bin/agent-switch codex provider exec "Reply with exactly OK."
   ./bin/agent-switch codex ttapi persist
   ./bin/agent-switch codex logout
+  ./bin/agent-switch codex native export-auth official-main
+  ./bin/agent-switch codex native restore-auth official-main
   ./bin/agent-switch claude native
   ./bin/agent-switch claude provider -p "Reply with exactly OK."
   ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY --api-key ...
@@ -283,8 +287,213 @@ PY
   echo "Updated ${auth_path} OPENAI_API_KEY to active profile key"
 }
 
+validate_snapshot_name() {
+  local name="$1"
+  [[ -n "${name}" ]] || die "snapshot name is required"
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "snapshot name must match: [a-z0-9][a-z0-9-]*"
+}
+
+snapshot_dir_for_name() {
+  local name="$1"
+  echo "${PROFILES_LOCAL_ROOT}/${name}/codex-native"
+}
+
+export_codex_native_auth() {
+  local name="${1:-}"
+  validate_snapshot_name "${name}"
+
+  local codex_home="${CODEX_HOME:-${HOME}/.codex}"
+  local auth_path="${codex_home}/auth.json"
+  local config_path="${codex_home}/config.toml"
+  local snapshot_dir
+  snapshot_dir="$(snapshot_dir_for_name "${name}")"
+
+  [[ -f "${auth_path}" ]] || die "missing ${auth_path}; nothing to export"
+  [[ -f "${config_path}" ]] || die "missing ${config_path}; nothing to export"
+
+  mkdir -p "${snapshot_dir}"
+  "${PYTHON_BIN}" - "${auth_path}" "${config_path}" "${snapshot_dir}" <<'PY'
+from __future__ import annotations
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+auth_path = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+snapshot_dir = Path(sys.argv[3])
+snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+for filename in ("auth.json", "config.toml"):
+    target = snapshot_dir / filename
+    if target.exists():
+        shutil.copy2(target, snapshot_dir / f"{filename}.bak.{ts}")
+
+shutil.copy2(auth_path, snapshot_dir / "auth.json")
+shutil.copy2(config_path, snapshot_dir / "config.toml")
+for target in (snapshot_dir / "auth.json", snapshot_dir / "config.toml"):
+    target.chmod(0o600)
+PY
+
+  echo "Exported ~/.codex auth snapshot to ${snapshot_dir}"
+}
+
+restore_codex_native_auth() {
+  local name="${1:-}"
+  validate_snapshot_name "${name}"
+
+  local snapshot_dir
+  snapshot_dir="$(snapshot_dir_for_name "${name}")"
+  local snapshot_auth="${snapshot_dir}/auth.json"
+  local snapshot_config="${snapshot_dir}/config.toml"
+  [[ -f "${snapshot_auth}" ]] || die "missing ${snapshot_auth}; run export-auth first"
+  [[ -f "${snapshot_config}" ]] || die "missing ${snapshot_config}; run export-auth first"
+
+  local codex_home="${CODEX_HOME:-${HOME}/.codex}"
+  local auth_path="${codex_home}/auth.json"
+  local config_path="${codex_home}/config.toml"
+
+  mkdir -p "${codex_home}"
+  "${PYTHON_BIN}" - "${snapshot_auth}" "${snapshot_config}" "${auth_path}" "${config_path}" <<'PY'
+from __future__ import annotations
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+snapshot_auth = Path(sys.argv[1])
+snapshot_config = Path(sys.argv[2])
+auth_path = Path(sys.argv[3])
+config_path = Path(sys.argv[4])
+
+ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+for target in (auth_path, config_path):
+    if target.exists():
+        shutil.copy2(target, target.with_name(f"{target.name}.bak.{ts}"))
+
+shutil.copy2(snapshot_auth, auth_path)
+shutil.copy2(snapshot_config, config_path)
+for target in (auth_path, config_path):
+    target.chmod(0o600)
+PY
+
+  echo "Restored ~/.codex auth snapshot from ${snapshot_dir}"
+}
+
 logout_codex() {
-  exec codex logout "$@"
+  local codex_home
+  local config_path
+  local rc=0
+  codex_home="${CODEX_HOME:-${HOME}/.codex}"
+  config_path="${codex_home}/config.toml"
+
+  cleanup_codex_provider_config() {
+    "${PYTHON_BIN}" - "$config_path" <<'PY'
+from __future__ import annotations
+import re
+import shutil
+import sys
+from datetime import datetime
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+if not config_path.exists() or config_path.stat().st_size == 0:
+    raise SystemExit(0)
+
+text = config_path.read_text(encoding="utf-8")
+changed = False
+active_provider = None
+
+model_provider_re = re.compile(r'^\s*model_provider\s*=\s*"([^"]+)"\s*$', re.MULTILINE)
+model_provider_match = model_provider_re.search(text)
+if model_provider_match:
+    active_provider = model_provider_match.group(1).strip()
+    text = model_provider_re.sub("", text)
+    changed = True
+
+lines = text.splitlines(keepends=True)
+out_lines: list[str] = []
+section_re = re.compile(r'^\s*\[model_providers\.([^\]]+)\]\s*$')
+base_url_re = re.compile(r'^\s*base_url\s*=\s*"([^"]*)"\s*$')
+i = 0
+while i < len(lines):
+    header_match = section_re.match(lines[i])
+    if not header_match:
+        out_lines.append(lines[i])
+        i += 1
+        continue
+
+    section_name = header_match.group(1).strip()
+    j = i + 1
+    section_body: list[str] = []
+    while j < len(lines):
+        if re.match(r'^\s*\[', lines[j]):
+            break
+        section_body.append(lines[j])
+        j += 1
+
+    should_drop = False
+    if section_name == "agent_switch":
+        should_drop = True
+    elif active_provider and section_name == active_provider:
+        for section_line in section_body:
+            base_url_match = base_url_re.match(section_line)
+            if base_url_match and base_url_match.group(1).strip():
+                should_drop = True
+                break
+
+    if should_drop:
+        changed = True
+    else:
+        out_lines.append(lines[i])
+        out_lines.extend(section_body)
+    i = j
+
+text = "".join(out_lines)
+
+if changed:
+    # Clean up excessive blank lines introduced by block removals.
+    text = re.sub(r"\n{3,}", "\n\n", text).lstrip("\n")
+    if text and not text.endswith("\n"):
+        text += "\n"
+
+if not changed:
+    raise SystemExit(0)
+
+if re.search(r"^\s*\[model_providers\.", text, re.MULTILINE) is None:
+    # Remove map-style section assignment leftovers if no provider tables remain.
+    map_style_re = re.compile(r"^\s*model_providers\s*=\s*\{\s*\}\s*$", re.MULTILINE)
+    if map_style_re.search(text):
+        text = map_style_re.sub("", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).lstrip("\n")
+        if text and not text.endswith("\n"):
+            text += "\n"
+        changed = True
+
+if not changed:
+    raise SystemExit(0)
+
+ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+shutil.copy2(config_path, config_path.with_name(f"{config_path.name}.bak.{ts}"))
+config_path.write_text(text, encoding="utf-8")
+print(f"Cleaned codex provider residue in {config_path}")
+PY
+  }
+
+  if ! cleanup_codex_provider_config; then
+    echo "Warning: failed to clean ${config_path} before codex logout" >&2
+  fi
+
+  if ! codex logout "$@"; then
+    rc=$?
+  fi
+
+  if ! cleanup_codex_provider_config; then
+    echo "Warning: failed to clean ${config_path} after codex logout" >&2
+  fi
+
+  return "$rc"
 }
 
 run_profile() {
@@ -588,6 +797,14 @@ run_codex() {
         ;;
       env)
         echo "codex backend=native"
+        ;;
+      export-auth)
+        shift
+        export_codex_native_auth "${1:-}"
+        ;;
+      restore-auth)
+        shift
+        restore_codex_native_auth "${1:-}"
         ;;
       *)
         exec codex "$@"

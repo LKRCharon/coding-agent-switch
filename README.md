@@ -31,7 +31,6 @@ CLI-first switcher for coding agents.
 
 ## 当前约定
 
-- 以后以这个仓库 `coding-agent-switch` 为唯一准，不再使用旧的 `claude-switch` / `codex-switch.legacy` / `claude-gateway-switch`
 - 常用私有 profile 可以直接放到 `profiles-local/*`
 - 当前本机已经接入过的常见 profile 示例：`cfm`、`ttapi`
 
@@ -156,6 +155,13 @@ chmod 600 .env
 # 适合让 Codex VSCode 扩展也跟随使用同一 provider
 ./bin/agent-switch codex cfm persist
 ./bin/agent-switch codex ttapi persist
+
+# 备份/恢复官方登录态（复制 ~/.codex/auth.json + ~/.codex/config.toml）
+./bin/agent-switch codex native export-auth official-main
+./bin/agent-switch codex native restore-auth official-main
+
+# 退出登录（调用 codex logout，并清理 ~/.codex/config.toml 中当前 provider 残留，回到未登录默认模式）
+./bin/agent-switch codex logout
 ```
 
 ### 2) Claude 切换底层
@@ -203,6 +209,12 @@ chmod 600 .env
 1. `profiles-local/<name>/auth.json`
 2. profile 配置里的 `env_key` 对应环境变量
 3. 通用 `OPENAI_API_KEY`
+
+官方登录态快照单独存放在 `profiles-local/<name>/codex-native/`：
+
+- `./bin/agent-switch codex native export-auth <name>`：备份当前 `~/.codex/auth.json` 和 `~/.codex/config.toml`
+- `./bin/agent-switch codex native restore-auth <name>`：把该快照恢复回 `~/.codex/`
+- 导出和恢复都会自动给已有文件打时间戳 `.bak.YYYYMMDD-HHMMSS`
 
 ## 给 AI Coding 助手的部署提示词（可直接贴）
 
