@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Create a local profile with minimal user input.
+
+This script writes:
+  - profiles-local/<name>/config.toml
+  - profiles-local/<name>/auth.json (when api key is provided)
+  - profiles-local/<name>/auth.json.template (if missing)
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None  # type: ignore[assignment]
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover
+        tomllib = None  # type: ignore[assignment]
+
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="add-profile",
+        description="Create profiles-local/<name>/config.toml and auth.json.",
+    )
+    parser.add_argument("--name", help="Profile name, e.g. cfm / ttapi / pro.")
+    parser.add_argument("--base-url", help="Provider base URL.")
+    parser.add_argument("--env-key", help="Env key used as fallback, e.g. CFM_API_KEY.")
+    parser.add_argument("--api-key", help="OPENAI_API_KEY written to auth.json.")
+    parser.add_argument("--model", default=None, help="Model in config.toml.")
+    parser.add_argument("--reasoning", default=None, help="model_reasoning_effort in config.toml.")
+    parser.add_argument("--wire-api", default=None, help="Provider wire API. Default: responses.")
+    parser.add_argument(
+        "--requires-openai-auth",
+        choices=["true", "false"],
+        default=None,
+        help="requires_openai_auth value.",
+    )
+    parser.add_argument(
+        "--profiles-local-root",
+        default=None,
+        help="Override profiles-local root directory.",
+    )
+    parser.add_argument(
+        "--provider-snippet",
+        default=None,
+        help="Inline TOML snippet containing [model_providers.<name>].",
+    )
+    parser.add_argument(
+        "--provider-snippet-file",
+        default=None,
+        help="Path to TOML snippet file, or '-' to read from stdin.",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Fail on missing required fields instead of prompting.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing config.toml/auth.json.",
+    )
+    return parser.parse_args()
+
+
+def read_snippet(args: argparse.Namespace) -> str:
+    chunks: list[str] = []
+    if args.provider_snippet:
+        chunks.append(args.provider_snippet)
+    if args.provider_snippet_file:
+        if args.provider_snippet_file == "-":
+            chunks.append(sys.stdin.read())
+        else:
+            chunks.append(Path(args.provider_snippet_file).read_text(encoding="utf-8"))
+    return "\n".join([part for part in chunks if part.strip()])
+
+
+def parse_bool_text(value: str | None, default: bool) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() == "true"
+
+
+def parse_snippet(snippet: str) -> dict[str, Any]:
+    if not snippet.strip():
+        return {}
+    if tomllib is None:
+        # Minimal parser fallback for common profile snippets:
+        # [model_providers.<name>]
+        # name/base_url/wire_api/requires_openai_auth/env_key
+        data: dict[str, Any] = {"model_providers": {}}
+        current_section = ""
+        for raw in snippet.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current_section = line[1:-1].strip()
+                continue
+            if "=" not in line:
+                continue
+            key, value_raw = line.split("=", 1)
+            key = key.strip()
+            value_raw = value_raw.strip()
+            if "#" in value_raw:
+                value_raw = value_raw.split("#", 1)[0].strip()
+            if value_raw.startswith('"') and value_raw.endswith('"'):
+                value: Any = value_raw[1:-1]
+            elif value_raw.lower() in {"true", "false"}:
+                value = value_raw.lower() == "true"
+            else:
+                value = value_raw
+
+            if current_section.startswith("model_providers."):
+                provider_name = current_section.split(".", 1)[1]
+                providers = data.setdefault("model_providers", {})
+                if not isinstance(providers, dict):
+                    providers = {}
+                    data["model_providers"] = providers
+                provider_cfg = providers.setdefault(provider_name, {})
+                if isinstance(provider_cfg, dict):
+                    provider_cfg[key] = value
+            elif current_section == "":
+                data[key] = value
+    else:
+        data = tomllib.loads(snippet)
+    out: dict[str, Any] = {}
+
+    providers = data.get("model_providers")
+    provider_key = None
+    provider_cfg: dict[str, Any] = {}
+    if isinstance(providers, dict) and providers:
+        provider_key = next(iter(providers.keys()))
+        entry = providers.get(provider_key)
+        if isinstance(entry, dict):
+            provider_cfg = entry
+
+    out["name"] = provider_key
+    out["base_url"] = provider_cfg.get("base_url")
+    out["wire_api"] = provider_cfg.get("wire_api")
+    out["requires_openai_auth"] = provider_cfg.get("requires_openai_auth")
+    out["env_key"] = provider_cfg.get("env_key")
+    out["model"] = data.get("model")
+    out["reasoning"] = data.get("model_reasoning_effort")
+    return out
+
+
+def prompt_if_missing(current: str | None, prompt: str, secret: bool = False) -> str | None:
+    if current:
+        return current.strip()
+    if secret:
+        value = getpass.getpass(prompt)
+    else:
+        value = input(prompt)
+    value = value.strip()
+    return value or None
+
+
+def toml_escape(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def ensure_name(name: str) -> str:
+    if not NAME_RE.match(name):
+        raise SystemExit("profile name must match: [a-z0-9][a-z0-9-]*")
+    return name
+
+
+def infer_profiles_local_root(cli_value: str | None) -> Path:
+    if cli_value:
+        return Path(cli_value).expanduser().resolve()
+    env_value = os.environ.get("PROFILES_LOCAL_ROOT")
+    if env_value:
+        return Path(env_value).expanduser().resolve()
+    project_root = Path(__file__).resolve().parents[1]
+    return (project_root / "profiles-local").resolve()
+
+
+def write_profile(
+    profile_dir: Path,
+    name: str,
+    base_url: str,
+    env_key: str,
+    model: str,
+    reasoning: str,
+    wire_api: str,
+    requires_openai_auth: bool,
+    api_key: str | None,
+    force: bool,
+) -> None:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    config_path = profile_dir / "config.toml"
+    auth_path = profile_dir / "auth.json"
+    auth_tmpl_path = profile_dir / "auth.json.template"
+
+    if config_path.exists() and not force:
+        raise SystemExit(f"{config_path} already exists. Use --force to overwrite.")
+    if auth_path.exists() and api_key and not force:
+        raise SystemExit(f"{auth_path} already exists. Use --force to overwrite.")
+
+    config_text = (
+        f"# local profile: {name}\n"
+        f'model_provider = "{toml_escape(name)}"\n'
+        f'model = "{toml_escape(model)}"\n'
+        f'model_reasoning_effort = "{toml_escape(reasoning)}"\n\n'
+        f"[model_providers.{name}]\n"
+        f'name = "{toml_escape(name)}"\n'
+        f'base_url = "{toml_escape(base_url)}"\n'
+        f'wire_api = "{toml_escape(wire_api)}"\n'
+        f"requires_openai_auth = {'true' if requires_openai_auth else 'false'}\n"
+        f'env_key = "{toml_escape(env_key)}"\n\n'
+        "[features]\n"
+        "multi_agent = true\n"
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+
+    if not auth_tmpl_path.exists():
+        auth_tmpl_path.write_text(
+            '{\n  "OPENAI_API_KEY": "your_api_key_here"\n}\n',
+            encoding="utf-8",
+        )
+
+    if api_key:
+        auth_path.write_text(
+            json.dumps({"OPENAI_API_KEY": api_key}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        auth_path.chmod(0o600)
+
+
+def main() -> int:
+    args = parse_args()
+    snippet_data = parse_snippet(read_snippet(args))
+
+    name = args.name or snippet_data.get("name")
+    base_url = args.base_url or snippet_data.get("base_url")
+    env_key = args.env_key or snippet_data.get("env_key")
+    model = args.model or snippet_data.get("model") or "gpt-5.4"
+    reasoning = args.reasoning or snippet_data.get("reasoning") or "high"
+    wire_api = args.wire_api or snippet_data.get("wire_api") or "responses"
+
+    snippet_requires_auth = snippet_data.get("requires_openai_auth")
+    default_requires_auth = True if snippet_requires_auth is None else bool(snippet_requires_auth)
+    requires_openai_auth = parse_bool_text(args.requires_openai_auth, default_requires_auth)
+
+    if not args.non_interactive:
+        name = prompt_if_missing(name, "Profile name: ")
+        base_url = prompt_if_missing(base_url, "Base URL: ")
+        env_key = prompt_if_missing(env_key, "Env key fallback (blank to auto-generate): ")
+        if args.api_key is None:
+            args.api_key = prompt_if_missing(None, "OPENAI_API_KEY (optional, hidden): ", secret=True)
+
+    if not name:
+        raise SystemExit("missing profile name, pass --name or provide a snippet with [model_providers.<name>]")
+    if not base_url:
+        raise SystemExit("missing base_url, pass --base-url or provide it in snippet")
+
+    name = ensure_name(name)
+    if not env_key:
+        env_key = name.upper().replace("-", "_") + "_API_KEY"
+
+    profile_root = infer_profiles_local_root(args.profiles_local_root)
+    profile_dir = profile_root / name
+
+    write_profile(
+        profile_dir=profile_dir,
+        name=name,
+        base_url=base_url,
+        env_key=env_key,
+        model=model,
+        reasoning=reasoning,
+        wire_api=wire_api,
+        requires_openai_auth=requires_openai_auth,
+        api_key=args.api_key,
+        force=args.force,
+    )
+
+    print(f"Created local profile: {name}")
+    print(f"Path: {profile_dir}")
+    print(f"Wrote: {profile_dir / 'config.toml'}")
+    if args.api_key:
+        print(f"Wrote: {profile_dir / 'auth.json'}")
+    else:
+        print(f"Recommended: write {profile_dir / 'auth.json'} with OPENAI_API_KEY")
+        print(f"Fallback also works via .env: {env_key}=...")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

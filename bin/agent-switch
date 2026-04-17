@@ -12,6 +12,7 @@ PROFILES_LOCAL_ROOT="${PROFILES_LOCAL_ROOT:-${PROJECT_ROOT}/profiles-local}"
 BALANCE_HELPER="${PROJECT_ROOT}/lib/provider_balance.py"
 ROOT_ENV_FILE="${ROOT_ENV_FILE:-${PROJECT_ROOT}/.env}"
 SUB2API_CTL="${SUB2API_CTL:-${PROJECT_ROOT}/sub2api-local/sub2api-localctl}"
+ADD_PROFILE_SCRIPT="${PROJECT_ROOT}/bin/add-profile"
 LOCAL_NO_PROXY="127.0.0.1,localhost"
 PYTHON_BIN="${GATEWAY_DIR}/.venv/bin/python"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -44,6 +45,7 @@ Usage:
   agent-switch balance <provider> [--token TOKEN | --username USER --prompt-password] [--days 30] [--json]
   agent-switch balance-login <provider> [--username USER --prompt-password]
   agent-switch profile list
+  agent-switch profile add [--name NAME] [--base-url URL] [--api-key KEY] [--provider-snippet-file PATH|-]
   agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]
   agent-switch list
 
@@ -53,17 +55,17 @@ Profiles:
   local profiles can be stored under profiles-local/ (ignored by git)
 
 Examples:
-  ./bin/agent-switch list
-  ./bin/agent-switch codex provider exec "Reply with exactly OK."
-  ./bin/agent-switch codex ttapi persist
-  ./bin/agent-switch codex logout
-  ./bin/agent-switch codex native export-auth official-main
-  ./bin/agent-switch codex native restore-auth official-main
-  ./bin/agent-switch claude native
-  ./bin/agent-switch claude provider -p "Reply with exactly OK."
-  ./bin/agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY --api-key ...
-  ./bin/agent-switch balance provider --json
-  ./bin/agent-switch balance-login provider --username your_name --prompt-password
+  agent-switch list
+  agent-switch codex provider exec "Reply with exactly OK."
+  agent-switch codex ttapi persist
+  agent-switch codex logout
+  agent-switch codex native export-auth official-main
+  agent-switch codex native restore-auth official-main
+  agent-switch claude native
+  agent-switch claude provider -p "Reply with exactly OK."
+  agent-switch profile create ttapi --base-url https://api.example.com/v1 --env-key TTAPI_API_KEY --api-key ...
+  agent-switch balance provider --json
+  agent-switch balance-login provider --username your_name --prompt-password
 USAGE
 }
 
@@ -503,112 +505,25 @@ run_profile() {
       cat <<'USAGE'
 Usage:
   agent-switch profile list
+  agent-switch profile add [--name NAME] [--base-url URL] [--api-key KEY] [--provider-snippet-file PATH|-]
   agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]
 USAGE
       ;;
     list)
       list_profiles
       ;;
+    add)
+      shift || true
+      [[ -x "${ADD_PROFILE_SCRIPT}" ]] || die "missing add-profile script: ${ADD_PROFILE_SCRIPT}"
+      "${ADD_PROFILE_SCRIPT}" "$@"
+      ;;
     create)
       shift || true
       local name="${1:-}"
       [[ -n "${name}" ]] || die "Usage: agent-switch profile create <name> --base-url URL [--env-key KEY] [--api-key KEY] [--model MODEL] [--reasoning LEVEL]"
       shift || true
-      [[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "profile name must match: [a-z0-9][a-z0-9-]*"
-
-      local base_url=""
-      local env_key=""
-      local api_key=""
-      local model="gpt-5.4"
-      local reasoning="high"
-      local wire_api="responses"
-
-      while [[ $# -gt 0 ]]; do
-        case "$1" in
-          --base-url)
-            base_url="${2:-}"
-            shift 2
-            ;;
-          --env-key)
-            env_key="${2:-}"
-            shift 2
-            ;;
-          --api-key)
-            api_key="${2:-}"
-            shift 2
-            ;;
-          --model)
-            model="${2:-}"
-            shift 2
-            ;;
-          --reasoning)
-            reasoning="${2:-}"
-            shift 2
-            ;;
-          --wire-api)
-            wire_api="${2:-}"
-            shift 2
-            ;;
-          *)
-            die "unknown option: $1"
-            ;;
-        esac
-      done
-
-      [[ -n "${base_url}" ]] || die "--base-url is required"
-      if [[ -z "${env_key}" ]]; then
-        env_key="$(echo "${name}" | tr '[:lower:]-' '[:upper:]_')_API_KEY"
-      fi
-
-      local profile_dir="${PROFILES_LOCAL_ROOT}/${name}"
-      mkdir -p "${profile_dir}"
-      cat > "${profile_dir}/config.toml" <<EOF
-# local profile: ${name}
-model_provider = "${name}"
-model = "${model}"
-model_reasoning_effort = "${reasoning}"
-
-[model_providers.${name}]
-name = "${name}"
-base_url = "${base_url}"
-wire_api = "${wire_api}"
-requires_openai_auth = true
-env_key = "${env_key}"
-
-[features]
-multi_agent = true
-EOF
-
-      if [[ ! -f "${profile_dir}/auth.json.template" ]]; then
-        cat > "${profile_dir}/auth.json.template" <<'EOF'
-{
-  "OPENAI_API_KEY": "your_api_key_here"
-}
-EOF
-      fi
-
-      if [[ -n "${api_key}" ]]; then
-        "${PYTHON_BIN}" - "$profile_dir/auth.json" "$api_key" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-auth_path = Path(sys.argv[1])
-api_key = sys.argv[2]
-payload = {"OPENAI_API_KEY": api_key}
-auth_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-auth_path.chmod(0o600)
-PY
-      fi
-
-      echo "Created local profile: ${name}"
-      echo "Path: ${profile_dir}"
-      if [[ -n "${api_key}" ]]; then
-        echo "Wrote ${profile_dir}/auth.json"
-      else
-        echo "Recommended: write ${profile_dir}/auth.json with OPENAI_API_KEY"
-        echo "Fallback also works via ${ROOT_ENV_FILE}: ${env_key}=..."
-      fi
+      [[ -x "${ADD_PROFILE_SCRIPT}" ]] || die "missing add-profile script: ${ADD_PROFILE_SCRIPT}"
+      "${ADD_PROFILE_SCRIPT}" --non-interactive --name "${name}" "$@"
       ;;
     *)
       die "unknown profile subcommand: ${sub}"

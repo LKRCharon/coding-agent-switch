@@ -23,8 +23,10 @@ CLI-first switcher for coding agents.
 
 ## 功能概览
 
-- 统一入口：`bin/agent-switch`
-- 兼容入口：`bin/claude-switch`、`bin/codex-switch`
+- 统一入口：`agent-switch`
+- 兼容入口：`claude-switch`、`codex-switch`
+- 配置助手：`add-profile`（交互或参数式创建 profile）
+- 安装分流：默认 `Codex-only`，`Claude + LiteLLM` 按需启用
 - 网关组件：`gateway/claude-gateway-switch`
 - 配置模板：`profiles/*/config.toml` + `auth.json.template`
 - 本地私有 profile：`profiles-local/*`（默认不进 git，Codex/Claude 都支持）
@@ -40,8 +42,11 @@ CLI-first switcher for coding agents.
 coding-agent-switch/
 ├── bin/
 │   ├── agent-switch
+│   ├── add-profile
 │   ├── claude-switch
 │   └── codex-switch
+├── install.sh
+├── install-claude-gateway.sh
 ├── gateway/
 │   ├── claude-gateway-switch
 │   ├── lib/render_runtime.py
@@ -56,11 +61,17 @@ coding-agent-switch/
 
 ## 前置条件
 
-- `claude` CLI
+Codex-only（默认）：
+
 - `codex` CLI
 - `python3`（建议 3.10+）
 
-## 一键安装
+Claude 网关（可选）：
+
+- `claude` CLI
+- 运行 `./install-claude-gateway.sh` 安装 LiteLLM 依赖
+
+## 安装（默认 Codex-only）
 
 在仓库根目录执行：
 
@@ -70,42 +81,125 @@ coding-agent-switch/
 
 它会自动完成：
 - 初始化 `.env`（不存在时从 `.env.example` 复制，作为可选 fallback）
-- 安装 `gateway/.venv`、LiteLLM 依赖和 `toml` 依赖
-- 把 `agent-switch` / `claude-switch` / `codex-switch` 链接到 `~/.local/bin`
+- 不安装 LiteLLM 网关依赖（默认跳过）
+- 把 `agent-switch` / `codex-switch` / `add-profile` 链接到 `~/.local/bin`
+
+如果你还需要 Claude 网关代理，再执行：
+
+```bash
+./install-claude-gateway.sh
+```
+
+这一步会安装 LiteLLM 依赖并链接 `claude-switch`。
+
+## 配置 PATH（关键）
+
+安装后建议把 `~/.local/bin` 加进 shell 的 `PATH`，之后就能直接使用
+`agent-switch` / `codex-switch` / `add-profile`，不需要写 `./bin/...`。
+
+zsh（macOS 默认）：
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+bash：
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+fish：
+
+```fish
+set -U fish_user_paths $HOME/.local/bin $fish_user_paths
+```
+
+验证：
+
+```bash
+command -v agent-switch
+command -v codex-switch
+command -v add-profile
+```
+
+如果你启用了 Claude 网关，再额外验证：
+
+```bash
+command -v claude-switch
+```
 
 ## 快速开始
 
-1. 复制环境变量模板：
+1. 执行安装：
 
 ```bash
 cd coding-agent-switch
-cp .env.example .env
-chmod 600 .env
+./install.sh
 ```
 
 2. 推荐在各 profile 的 `auth.json` 中填写 key；`.env` 只作为兼容 fallback。
 
-3. 安装网关依赖（LiteLLM）：
+3. 查看可用 profile：
 
 ```bash
-./gateway/claude-gateway-switch install
+agent-switch list
 ```
 
-4. 查看可用 profile：
+4. （可选）如果需要 Claude 网关代理：
 
 ```bash
-./bin/agent-switch list
+./install-claude-gateway.sh
 ```
 
 ## 常用命令
 
-### 0) 多 profile（cfm / ttapi / fox）本地创建（不进 git）
+### 0) 一键添加 profile（推荐）
+
+直接填参数：
+
+```bash
+add-profile --name pro \
+  --base-url https://api.dest.space \
+  --api-key sk-xxxx \
+  --wire-api responses \
+  --requires-openai-auth true
+```
+
+也可以直接喂 TOML 片段（适合你现在这种配置）：
+
+```bash
+cat <<'EOF' | add-profile --api-key sk-xxxx --provider-snippet-file -
+[model_providers.pro]
+name = "pro"
+base_url = "https://api.dest.space"
+wire_api = "responses"
+requires_openai_auth = true
+EOF
+```
+
+如果你不想记参数，可以直接交互：
+
+```bash
+add-profile
+```
+
+兼容入口（等价）：
+
+```bash
+agent-switch profile add --name pro --base-url https://api.dest.space --api-key sk-xxxx
+agent-switch profile create pro --base-url https://api.dest.space --api-key sk-xxxx
+```
+
+### 1) 多 profile（cfm / ttapi / fox）本地创建（不进 git）
 
 已验证的常用示例：
 
 ```bash
 # 创建 cfm（写到 profiles-local/cfm）
-./bin/agent-switch profile create cfm \
+agent-switch profile create cfm \
   --base-url https://api-vip.codex-for.me/v1 \
   --env-key CFM_API_KEY \
   --api-key your_cfm_key
@@ -113,19 +207,19 @@ chmod 600 .env
 
 ```bash
 # 创建 ttapi（写到 profiles-local/ttapi）
-./bin/agent-switch profile create ttapi \
+agent-switch profile create ttapi \
   --base-url https://w.ciykj.cn \
   --env-key TTAPI_API_KEY \
   --api-key your_ttapi_key
 
 # 创建 fox（写到 profiles-local/fox）
-./bin/agent-switch profile create fox \
+agent-switch profile create fox \
   --base-url https://your-fox-endpoint/v1 \
   --env-key FOX_API_KEY \
   --api-key your_fox_key
 
 # 查看可用 profile（包含 profiles-local）
-./bin/agent-switch profile list
+agent-switch profile list
 ```
 
 推荐放到 `profiles-local/<name>/auth.json`：
@@ -138,53 +232,55 @@ chmod 600 .env
 
 `.env` 里的 `CFM_API_KEY` / `TTAPI_API_KEY` / `FOX_API_KEY` 仍可作为兼容 fallback，但不再是首选。
 
-### 1) Codex 切换 provider
+### 2) Codex 切换 provider
 
 ```bash
 # 临时切换（只对当前命令生效）
-./bin/agent-switch codex cfm
-./bin/agent-switch codex ttapi
-./bin/agent-switch codex fox
+agent-switch codex cfm
+agent-switch codex ttapi
+agent-switch codex fox
 
 # 仅查看当前 profile 解析结果
-./bin/agent-switch codex cfm prepare
-./bin/agent-switch codex ttapi prepare
-./bin/agent-switch codex ttapi env
+agent-switch codex cfm prepare
+agent-switch codex ttapi prepare
+agent-switch codex ttapi env
 
 # 持久切换（修改 ~/.codex/config.toml + ~/.codex/auth.json）
 # 适合让 Codex VSCode 扩展也跟随使用同一 provider
-./bin/agent-switch codex cfm persist
-./bin/agent-switch codex ttapi persist
+agent-switch codex cfm persist
+agent-switch codex ttapi persist
 
 # 备份/恢复官方登录态（复制 ~/.codex/auth.json + ~/.codex/config.toml）
-./bin/agent-switch codex native export-auth official-main
-./bin/agent-switch codex native restore-auth official-main
+agent-switch codex native export-auth official-main
+agent-switch codex native restore-auth official-main
 
 # 退出登录（调用 codex logout，并清理 ~/.codex/config.toml 中当前 provider 残留，回到未登录默认模式）
-./bin/agent-switch codex logout
+agent-switch codex logout
 ```
 
-### 2) Claude 切换底层
+### 3) Claude 切换底层
+
+先确保你已执行过 `./install-claude-gateway.sh`。
 
 ```bash
 # 原生 Claude（不走网关）
-./bin/agent-switch claude native
+agent-switch claude native
 
 # 走 profile（经 LiteLLM 代理，支持 profiles 和 profiles-local）
-./bin/agent-switch claude cfm
-./bin/agent-switch claude ttapi
+agent-switch claude cfm
+agent-switch claude ttapi
 
 # 单次提示
-./bin/agent-switch claude ttapi -p "Reply with exactly OK."
+agent-switch claude ttapi -p "Reply with exactly OK."
 ```
 
-### 3) 网关运维
+### 4) 网关运维
 
 ```bash
-./bin/agent-switch claude ttapi serve
-./bin/agent-switch claude ttapi status
-./bin/agent-switch claude ttapi logs
-./bin/agent-switch claude ttapi stop
+agent-switch claude ttapi serve
+agent-switch claude ttapi status
+agent-switch claude ttapi logs
+agent-switch claude ttapi stop
 ```
 
 ## 配置方式（推荐）
@@ -212,8 +308,8 @@ chmod 600 .env
 
 官方登录态快照单独存放在 `profiles-local/<name>/codex-native/`：
 
-- `./bin/agent-switch codex native export-auth <name>`：备份当前 `~/.codex/auth.json` 和 `~/.codex/config.toml`
-- `./bin/agent-switch codex native restore-auth <name>`：把该快照恢复回 `~/.codex/`
+- `agent-switch codex native export-auth <name>`：备份当前 `~/.codex/auth.json` 和 `~/.codex/config.toml`
+- `agent-switch codex native restore-auth <name>`：把该快照恢复回 `~/.codex/`
 - 导出和恢复都会自动给已有文件打时间戳 `.bak.YYYYMMDD-HHMMSS`
 
 ## 给 AI Coding 助手的部署提示词（可直接贴）
@@ -221,12 +317,12 @@ chmod 600 .env
 ```text
 请在本机部署 coding-agent-switch：
 1) 复制 .env.example 为 .env 并设置 chmod 600
-2) 创建 profile：./bin/agent-switch profile create <name> --base-url ... --env-key ... --api-key ...
-3) 执行 ./gateway/claude-gateway-switch install
-4) 运行 ./bin/agent-switch list 验证 profile
-5) 运行 ./bin/agent-switch codex cfm prepare 或 ./bin/agent-switch codex ttapi prepare 验证 codex provider
-6) 运行 ./bin/agent-switch codex cfm persist（需要持久切换时）
-7) 运行 ./bin/agent-switch claude native status 与 ./bin/agent-switch claude cfm prepare / ./bin/agent-switch claude ttapi prepare
+2) 创建 profile：add-profile --name <name> --base-url ... --api-key ...（或 agent-switch profile add ...）
+3) 执行 ./install.sh（Codex-only）
+4) 运行 agent-switch list 验证 profile
+5) 运行 agent-switch codex cfm prepare 或 agent-switch codex ttapi prepare 验证 codex provider
+6) 运行 agent-switch codex cfm persist（需要持久切换时）
+7) 仅当要用 Claude 网关时：执行 ./install-claude-gateway.sh，再运行 agent-switch claude cfm prepare / agent-switch claude ttapi prepare
 8) 不要把 .env、profiles-local/、profiles/*/auth.json、gateway/runtime/ 提交到 git
 ```
 
