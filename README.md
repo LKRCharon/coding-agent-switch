@@ -34,7 +34,6 @@ CLI-first switcher for coding agents.
 ## 当前约定
 
 - 常用私有 profile 可以直接放到 `profiles-local/*`
-- 当前本机已经接入过的常见 profile 示例：`cfm`、`ttapi`
 
 ## 目录结构
 
@@ -162,7 +161,7 @@ agent-switch list
 
 ```bash
 add-profile --name pro \
-  --base-url https://api.dest.space \
+  --base-url https://api.example.com/v1 \
   --api-key sk-xxxx \
   --wire-api responses \
   --requires-openai-auth true
@@ -174,7 +173,7 @@ add-profile --name pro \
 cat <<'EOF' | add-profile --api-key sk-xxxx --provider-snippet-file -
 [model_providers.pro]
 name = "pro"
-base_url = "https://api.dest.space"
+base_url = "https://api.example.com/v1"
 wire_api = "responses"
 requires_openai_auth = true
 EOF
@@ -189,34 +188,34 @@ add-profile
 兼容入口（等价）：
 
 ```bash
-agent-switch profile add --name pro --base-url https://api.dest.space --api-key sk-xxxx
-agent-switch profile create pro --base-url https://api.dest.space --api-key sk-xxxx
+agent-switch profile add --name pro --base-url https://api.example.com/v1 --api-key sk-xxxx
+agent-switch profile create pro --base-url https://api.example.com/v1 --api-key sk-xxxx
 ```
 
-### 1) 多 profile（cfm / ttapi / fox）本地创建（不进 git）
+### 1) 多 profile（provider-a / provider-b / provider-c）本地创建（不进 git）
 
 已验证的常用示例：
 
 ```bash
-# 创建 cfm（写到 profiles-local/cfm）
-agent-switch profile create cfm \
-  --base-url https://api-vip.codex-for.me/v1 \
-  --env-key CFM_API_KEY \
-  --api-key your_cfm_key
+# 创建 provider-a（写到 profiles-local/provider-a）
+agent-switch profile create provider-a \
+  --base-url https://api-a.example.com/v1 \
+  --env-key PROVIDER_A_API_KEY \
+  --api-key your_provider_a_key
 ```
 
 ```bash
-# 创建 ttapi（写到 profiles-local/ttapi）
-agent-switch profile create ttapi \
-  --base-url https://w.ciykj.cn \
-  --env-key TTAPI_API_KEY \
-  --api-key your_ttapi_key
+# 创建 provider-b（写到 profiles-local/provider-b）
+agent-switch profile create provider-b \
+  --base-url https://api-b.example.com/v1 \
+  --env-key PROVIDER_B_API_KEY \
+  --api-key your_provider_b_key
 
-# 创建 fox（写到 profiles-local/fox）
-agent-switch profile create fox \
-  --base-url https://your-fox-endpoint/v1 \
-  --env-key FOX_API_KEY \
-  --api-key your_fox_key
+# 创建 provider-c（写到 profiles-local/provider-c）
+agent-switch profile create provider-c \
+  --base-url https://api-c.example.com/v1 \
+  --env-key PROVIDER_C_API_KEY \
+  --api-key your_provider_c_key
 
 # 查看可用 profile（包含 profiles-local）
 agent-switch profile list
@@ -230,25 +229,25 @@ agent-switch profile list
 }
 ```
 
-`.env` 里的 `CFM_API_KEY` / `TTAPI_API_KEY` / `FOX_API_KEY` 仍可作为兼容 fallback，但不再是首选。
+`.env` 里的 `PROVIDER_A_API_KEY` / `PROVIDER_B_API_KEY` / `PROVIDER_C_API_KEY` 仍可作为兼容 fallback，但不再是首选。
 
 ### 2) Codex 切换 provider
 
 ```bash
 # 临时切换（只对当前命令生效）
-agent-switch codex cfm
-agent-switch codex ttapi
-agent-switch codex fox
+agent-switch codex provider-a
+agent-switch codex provider-b
+agent-switch codex provider-c
 
 # 仅查看当前 profile 解析结果
-agent-switch codex cfm prepare
-agent-switch codex ttapi prepare
-agent-switch codex ttapi env
+agent-switch codex provider-a prepare
+agent-switch codex provider-b prepare
+agent-switch codex provider-b env
 
 # 持久切换（修改 ~/.codex/config.toml + ~/.codex/auth.json）
 # 适合让 Codex VSCode 扩展也跟随使用同一 provider
-agent-switch codex cfm persist
-agent-switch codex ttapi persist
+agent-switch codex provider-a persist
+agent-switch codex provider-b persist
 
 # 备份/恢复官方登录态（复制 ~/.codex/auth.json + ~/.codex/config.toml）
 agent-switch codex native export-auth official-main
@@ -267,20 +266,20 @@ agent-switch codex logout
 agent-switch claude native
 
 # 走 profile（经 LiteLLM 代理，支持 profiles 和 profiles-local）
-agent-switch claude cfm
-agent-switch claude ttapi
+agent-switch claude provider-a
+agent-switch claude provider-b
 
 # 单次提示
-agent-switch claude ttapi -p "Reply with exactly OK."
+agent-switch claude provider-b -p "Reply with exactly OK."
 ```
 
 ### 4) 网关运维
 
 ```bash
-agent-switch claude ttapi serve
-agent-switch claude ttapi status
-agent-switch claude ttapi logs
-agent-switch claude ttapi stop
+agent-switch claude provider-b serve
+agent-switch claude provider-b status
+agent-switch claude provider-b logs
+agent-switch claude provider-b stop
 ```
 
 ## 配置方式（推荐）
@@ -288,7 +287,7 @@ agent-switch claude ttapi stop
 优先使用各 profile 自己的 `auth.json` 管理 key，不把密钥写进仓库。
 
 - `profiles/*/config.toml`：放 base_url、model、env_key
-- `profiles-local/*/config.toml`：放你的私有 provider（如 cfm/ttapi/fox），默认忽略提交
+- `profiles-local/*/config.toml`：放你的私有 provider（如 provider-a/provider-b/provider-c），默认忽略提交
 - `profiles-local/*/auth.json`：放真实 key，推荐使用
 - `.env`：兼容 fallback（如 `CFM_API_KEY=...`）
 
@@ -320,9 +319,9 @@ agent-switch claude ttapi stop
 2) 创建 profile：add-profile --name <name> --base-url ... --api-key ...（或 agent-switch profile add ...）
 3) 执行 ./install.sh（Codex-only）
 4) 运行 agent-switch list 验证 profile
-5) 运行 agent-switch codex cfm prepare 或 agent-switch codex ttapi prepare 验证 codex provider
-6) 运行 agent-switch codex cfm persist（需要持久切换时）
-7) 仅当要用 Claude 网关时：执行 ./install-claude-gateway.sh，再运行 agent-switch claude cfm prepare / agent-switch claude ttapi prepare
+5) 运行 agent-switch codex provider-a prepare 或 agent-switch codex provider-b prepare 验证 codex provider
+6) 运行 agent-switch codex provider-a persist（需要持久切换时）
+7) 仅当要用 Claude 网关时：执行 ./install-claude-gateway.sh，再运行 agent-switch claude provider-a prepare / agent-switch claude provider-b prepare
 8) 不要把 .env、profiles-local/、profiles/*/auth.json、gateway/runtime/ 提交到 git
 ```
 
