@@ -30,7 +30,7 @@ def profile_search_roots(primary_root: Path, local_root: str | None) -> list[Pat
 def resolve_profile_dir(profile: str, roots: list[Path]) -> Path:
     for root in roots:
         profile_dir = root / profile
-        if profile_dir.is_dir():
+        if profile_dir.is_dir() and (profile_dir / "config.toml").is_file():
             return profile_dir
     raise SystemExit(f"Profile not found: {profile}")
 
@@ -43,6 +43,8 @@ def iter_profile_dirs(roots: list[Path]) -> list[Path]:
             continue
         for profile_dir in sorted(root.iterdir()):
             if not profile_dir.is_dir():
+                continue
+            if not (profile_dir / "config.toml").is_file():
                 continue
             profile = profile_dir.name
             if profile in seen:

@@ -36,8 +36,10 @@ load_local_env_file "${ROOT_ENV_FILE}"
 usage() {
   cat <<'USAGE'
 Usage:
-  agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|prepare|backend] [extra args...]
-  agent-switch codex [profile] persist
+  agent-switch                          # interactive menu (numbers or arrow keys)
+  agent-switch [claude|codex] [profile] [serve|stop|status|logs|env|show|prepare|backend] [extra args...]
+  agent-switch codex [profile] use
+  agent-switch codex [profile] run [codex args...]
   agent-switch codex [profile] logout
   agent-switch codex native export-auth <name>
   agent-switch codex native restore-auth <name>
@@ -56,8 +58,9 @@ Profiles:
 
 Examples:
   agent-switch list
-  agent-switch codex provider exec "Reply with exactly OK."
-  agent-switch codex ttapi persist
+  agent-switch codex ttapi
+  agent-switch codex ttapi use
+  agent-switch codex ttapi run -p "Reply with exactly OK."
   agent-switch codex logout
   agent-switch codex native export-auth official-main
   agent-switch codex native restore-auth official-main
@@ -69,9 +72,221 @@ Examples:
 USAGE
 }
 
+clear_screen() {
+  printf '\033[2J\033[H'
+}
+
+pause_for_menu() {
+  if [[ -t 0 ]]; then
+    printf '\nPress Enter to continue...'
+    IFS= read -r _ || true
+  fi
+}
+
+menu_pick() {
+  local title="$1"
+  shift
+  local -a options=("$@")
+  local selected=0
+  local key=""
+  local next=""
+
+  [[ ${#options[@]} -gt 0 ]] || die "menu_pick requires at least one option"
+
+  while true; do
+    clear_screen
+    echo "${title}"
+    echo
+    echo "Use number or ↑/↓ then Enter. Press q to quit."
+    echo
+    local i=0
+    for i in "${!options[@]}"; do
+      local item_no=$((i + 1))
+      if [[ "${i}" -eq "${selected}" ]]; then
+        printf '  > %2d) %s\n' "${item_no}" "${options[$i]}"
+      else
+        printf '    %2d) %s\n' "${item_no}" "${options[$i]}"
+      fi
+    done
+
+    IFS= read -rsn1 key || return 1
+    case "${key}" in
+      "")
+        MENU_INDEX="${selected}"
+        return 0
+        ;;
+      [0-9])
+        local number_text="${key}"
+        if (( ${#options[@]} > 9 )); then
+          printf '\nType full number then Enter [%s]: ' "${key}"
+          IFS= read -r next || true
+          next="${next//[^0-9]/}"
+          number_text+="${next}"
+        fi
+        local picked
+        picked=$((10#${number_text}))
+        if (( picked >= 1 && picked <= ${#options[@]} )); then
+          MENU_INDEX=$((picked - 1))
+          return 0
+        fi
+        ;;
+      q|Q)
+        return 1
+        ;;
+      $'\x1b')
+        if IFS= read -rsn1 -t 1 next && [[ "${next}" == "[" ]]; then
+          if IFS= read -rsn1 -t 1 next; then
+            case "${next}" in
+              A)
+                selected=$(( (selected - 1 + ${#options[@]}) % ${#options[@]} ))
+                ;;
+              B)
+                selected=$(( (selected + 1) % ${#options[@]} ))
+                ;;
+            esac
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+build_action_options() {
+  local client="$1"
+  local profile="$2"
+  ACTION_LABELS=()
+  ACTION_VALUES=()
+
+  if [[ "${client}" == "codex" ]]; then
+    if [[ "${profile}" == "native" ]]; then
+      ACTION_LABELS+=("Start codex (native)")
+      ACTION_VALUES+=("run")
+      ACTION_LABELS+=("Show status")
+      ACTION_VALUES+=("status")
+      ACTION_LABELS+=("Show env")
+      ACTION_VALUES+=("env")
+    else
+      ACTION_LABELS+=("Use profile (persist to ~/.codex)")
+      ACTION_VALUES+=("use")
+      ACTION_LABELS+=("Show profile summary")
+      ACTION_VALUES+=("show")
+      ACTION_LABELS+=("Run codex once with profile")
+      ACTION_VALUES+=("run")
+      ACTION_LABELS+=("Show status")
+      ACTION_VALUES+=("status")
+      ACTION_LABELS+=("Show env")
+      ACTION_VALUES+=("env")
+    fi
+  else
+    ACTION_LABELS+=("Start ${client} (interactive)")
+    ACTION_VALUES+=("run")
+    ACTION_LABELS+=("Show status")
+    ACTION_VALUES+=("status")
+    ACTION_LABELS+=("Show env")
+    ACTION_VALUES+=("env")
+    if [[ "${profile}" != "native" ]]; then
+      ACTION_LABELS+=("Prepare gateway profile")
+      ACTION_VALUES+=("prepare")
+      ACTION_LABELS+=("Start gateway")
+      ACTION_VALUES+=("serve")
+      ACTION_LABELS+=("Stop gateway")
+      ACTION_VALUES+=("stop")
+      if [[ "${profile}" == "sub2api" ]]; then
+        ACTION_LABELS+=("Show backend logs")
+        ACTION_VALUES+=("logs")
+      fi
+    fi
+  fi
+
+  ACTION_LABELS+=("Back")
+  ACTION_VALUES+=("back")
+  ACTION_LABELS+=("Exit")
+  ACTION_VALUES+=("exit")
+}
+
+run_client_action() {
+  local client="$1"
+  local action="$2"
+  if [[ "${client}" == "claude" ]]; then
+    case "${action}" in
+      run) run_claude ;;
+      *) run_claude "${action}" ;;
+    esac
+  else
+    case "${action}" in
+      run) run_codex run ;;
+      *) run_codex "${action}" ;;
+    esac
+  fi
+}
+
+run_interactive_menu() {
+  local selected_client=""
+  local selected_profile=""
+
+  while true; do
+    local -a client_labels=("Claude" "Codex" "Exit")
+    local -a client_values=("claude" "codex" "exit")
+    menu_pick "Agent Switch" "${client_labels[@]}" || return 0
+    selected_client="${client_values[$MENU_INDEX]}"
+    if [[ "${selected_client}" == "exit" ]]; then
+      return 0
+    fi
+
+    while true; do
+      local -a profiles=()
+      local profile_name=""
+      while IFS= read -r profile_name; do
+        [[ -n "${profile_name}" ]] || continue
+        profiles+=("${profile_name}")
+      done < <(list_profiles)
+      profiles+=("Back" "Exit")
+
+      menu_pick "Select profile for ${selected_client}" "${profiles[@]}" || return 0
+      selected_profile="${profiles[$MENU_INDEX]}"
+
+      if [[ "${selected_profile}" == "Back" ]]; then
+        break
+      fi
+      if [[ "${selected_profile}" == "Exit" ]]; then
+        return 0
+      fi
+
+      PROFILE="${selected_profile}"
+      PROFILE_EXPLICIT=1
+      PORT="$(port_for_profile "${PROFILE}")"
+      CLIENT="${selected_client}"
+
+      while true; do
+        build_action_options "${selected_client}" "${selected_profile}"
+        menu_pick "Select action (${selected_client} / ${selected_profile})" "${ACTION_LABELS[@]}" || return 0
+        local action="${ACTION_VALUES[$MENU_INDEX]}"
+
+        if [[ "${action}" == "back" ]]; then
+          break
+        fi
+        if [[ "${action}" == "exit" ]]; then
+          return 0
+        fi
+
+        clear_screen
+        echo "Running: agent-switch ${selected_client} ${selected_profile} ${action}"
+        echo
+        run_client_action "${selected_client}" "${action}"
+        pause_for_menu
+      done
+    done
+  done
+}
+
 die() {
   echo "$*" >&2
   exit 1
+}
+
+require_explicit_profile() {
+  local action="$1"
+  [[ "${PROFILE_EXPLICIT}" == "1" ]] || die "${action} requires an explicit profile"
 }
 
 is_client() {
@@ -81,18 +296,37 @@ is_client() {
   esac
 }
 
+is_claude_command() {
+  case "$1" in
+    ""|help|-h|--help|list|backend|serve|stop|status|logs|env|prepare) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_codex_command() {
+  case "$1" in
+    ""|help|-h|--help|list|use|run|backend|serve|stop|status|logs|env|persist|show|prepare|logout) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_profile() {
   [[ "$1" == "native" ]] && return 0
   [[ -n "$(resolve_profile_dir "$1")" ]]
 }
 
+is_runnable_profile_dir() {
+  local dir="$1"
+  [[ -d "${dir}" && -f "${dir}/config.toml" ]]
+}
+
 resolve_profile_dir() {
   local profile="$1"
-  if [[ -d "${PROFILES_LOCAL_ROOT}/${profile}" ]]; then
+  if is_runnable_profile_dir "${PROFILES_LOCAL_ROOT}/${profile}"; then
     echo "${PROFILES_LOCAL_ROOT}/${profile}"
     return 0
   fi
-  if [[ -d "${PROFILES_ROOT}/${profile}" ]]; then
+  if is_runnable_profile_dir "${PROFILES_ROOT}/${profile}"; then
     echo "${PROFILES_ROOT}/${profile}"
     return 0
   fi
@@ -103,10 +337,12 @@ list_profiles() {
   echo "native"
   {
     if [[ -d "${PROFILES_ROOT}" ]]; then
-      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -name '*' \
+        -exec test -f "{}/config.toml" \; -exec basename {} \;
     fi
     if [[ -d "${PROFILES_LOCAL_ROOT}" ]]; then
-      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -name '*' \
+        -exec test -f "{}/config.toml" \; -exec basename {} \;
     fi
   } | sort -u
 }
@@ -115,10 +351,12 @@ default_profile() {
   local first
   first="$({
     if [[ -d "${PROFILES_ROOT}" ]]; then
-      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+      find "${PROFILES_ROOT}" -mindepth 1 -maxdepth 1 -type d -name '*' \
+        -exec test -f "{}/config.toml" \; -exec basename {} \;
     fi
     if [[ -d "${PROFILES_LOCAL_ROOT}" ]]; then
-      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -exec basename {} \;
+      find "${PROFILES_LOCAL_ROOT}" -mindepth 1 -maxdepth 1 -type d -name '*' \
+        -exec test -f "{}/config.toml" \; -exec basename {} \;
     fi
   } | sort -u | head -n 1)"
   if [[ -n "${first}" ]]; then
@@ -159,9 +397,10 @@ json_quote() {
 
 load_profile_vars() {
   local profile_dir
+  local rendered
   profile_dir="$(resolve_profile_dir "${PROFILE}")" || die "unknown profile: ${PROFILE}"
 
-  eval "$("${PYTHON_BIN}" - "$profile_dir" "$PROFILE" <<'PY'
+  if ! rendered="$("${PYTHON_BIN}" - "$profile_dir" "$PROFILE" <<'PY'
 import json
 import os
 import shlex
@@ -213,7 +452,11 @@ emit("PROFILE_WIRE_API", wire_api)
 emit("PROFILE_ENV_KEY", env_key)
 emit("PROFILE_REQUIRES_OPENAI_AUTH", "true" if requires_auth else "false")
 PY
-)"
+  )"; then
+    die "failed to load profile: ${PROFILE}"
+  fi
+
+  eval "${rendered}"
 }
 
 persist_codex_profile() {
@@ -228,14 +471,14 @@ persist_codex_profile() {
   config_path="${codex_home}/config.toml"
   auth_path="${codex_home}/auth.json"
 
-  "${PYTHON_BIN}" - "$config_path" "$auth_path" "$PROFILE" "$PROFILE_MODEL" "$PROFILE_REASONING" "$PROFILE_PROVIDER_NAME" "$PROFILE_BASE_URL" "$PROFILE_WIRE_API" "$PROFILE_REQUIRES_OPENAI_AUTH" "$PROFILE_API_KEY" <<'PY'
+  "${PYTHON_BIN}" - "$config_path" "$auth_path" "$PROFILE" "$PROFILE_MODEL" "$PROFILE_REASONING" "$PROFILE_PROVIDER_NAME" "$PROFILE_BASE_URL" "$PROFILE_WIRE_API" "$PROFILE_REQUIRES_OPENAI_AUTH" "$PROFILE_ENV_KEY" "$PROFILE_API_KEY" <<'PY'
 from __future__ import annotations
 import json
+import re
 import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-import toml
 
 config_path = Path(sys.argv[1])
 auth_path = Path(sys.argv[2])
@@ -246,36 +489,75 @@ provider_name = sys.argv[6]
 base_url = sys.argv[7]
 wire_api = sys.argv[8]
 requires_auth = sys.argv[9].lower() == "true"
-api_key = sys.argv[10]
+env_key = sys.argv[10]
+api_key = sys.argv[11]
 
 config_path.parent.mkdir(parents=True, exist_ok=True)
 auth_path.parent.mkdir(parents=True, exist_ok=True)
 
 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 
-cfg: dict = {}
+config_text = ""
 if config_path.exists() and config_path.stat().st_size > 0:
-    cfg = toml.load(config_path)
+    config_text = config_path.read_text(encoding="utf-8")
     shutil.copy2(config_path, config_path.with_name(f"{config_path.name}.bak.{ts}"))
-
-providers = cfg.get("model_providers")
-if not isinstance(providers, dict):
-    providers = {}
-providers[profile] = {
-    "name": provider_name or profile,
-    "base_url": base_url,
-    "wire_api": wire_api or "responses",
-    "requires_openai_auth": requires_auth,
-}
-providers.pop("agent_switch", None)
-cfg["model_provider"] = profile
-cfg["model_providers"] = providers
+top_level_lines = []
+top_level_lines.append(f'model_provider = "{profile}"')
 if model:
-    cfg["model"] = model
+    top_level_lines.append(f'model = "{model}"')
 if reasoning:
-    cfg["model_reasoning_effort"] = reasoning
+    top_level_lines.append(f'model_reasoning_effort = "{reasoning}"')
 
-config_path.write_text(toml.dumps(cfg), encoding="utf-8")
+for line in top_level_lines:
+    key = line.split("=", 1)[0].strip()
+    pattern = re.compile(rf"(?m)^\s*{re.escape(key)}\s*=.*(?:\n|$)")
+    replacement = line + "\n"
+    if pattern.search(config_text):
+        config_text = pattern.sub(replacement, config_text, count=1)
+    else:
+        config_text = replacement + config_text
+
+table_header = f"[model_providers.{profile}]"
+table_body = [
+    f'name = "{provider_name or profile}"\n',
+    f'base_url = "{base_url}"\n',
+    f'wire_api = "{wire_api or "responses"}"\n',
+    f'requires_openai_auth = {"true" if requires_auth else "false"}\n',
+    f'env_key = "{env_key}"\n',
+]
+
+lines = config_text.splitlines(keepends=True)
+out_lines: list[str] = []
+i = 0
+replaced = False
+target_header = table_header.strip()
+while i < len(lines):
+    if lines[i].strip() != target_header:
+        out_lines.append(lines[i])
+        i += 1
+        continue
+
+    replaced = True
+    out_lines.append(table_header + "\n")
+    out_lines.extend(table_body)
+    i += 1
+    while i < len(lines) and not re.match(r"^\s*\[", lines[i]):
+        i += 1
+    if i < len(lines) and out_lines and out_lines[-1].strip():
+        out_lines.append("\n")
+
+if not replaced:
+    if out_lines and out_lines[-1].strip():
+        out_lines.append("\n")
+    out_lines.append(table_header + "\n")
+    out_lines.extend(table_body)
+
+config_text = "".join(out_lines)
+config_text = re.sub(r"\n{3,}", "\n\n", config_text).lstrip("\n")
+if config_text and not config_text.endswith("\n"):
+    config_text += "\n"
+
+config_path.write_text(config_text, encoding="utf-8")
 
 auth: dict = {}
 if auth_path.exists() and auth_path.stat().st_size > 0:
@@ -635,6 +917,30 @@ run_claude() {
     return 0
   fi
 
+  if [[ "${PROFILE_EXPLICIT}" != "1" ]]; then
+    case "$cmd" in
+      "")
+        exec claude
+        ;;
+      help|-h|--help)
+        usage
+        ;;
+      list)
+        list_profiles
+        ;;
+      status)
+        echo "claude backend=native"
+        ;;
+      env)
+        echo "claude backend=native"
+        ;;
+      *)
+        exec claude "$@"
+        ;;
+    esac
+    return 0
+  fi
+
   case "$cmd" in
     help|-h|--help)
       usage
@@ -644,6 +950,7 @@ run_claude() {
       ;;
     backend)
       shift
+      require_explicit_profile "claude backend"
       if [[ "${PROFILE}" != "sub2api" ]]; then
         die "backend only applies to profile: sub2api"
       fi
@@ -651,16 +958,19 @@ run_claude() {
       ;;
     serve)
       shift
+      require_explicit_profile "claude serve"
       ensure_backend_started
       run_claude_switch serve "${PROFILE}" --port "${PORT}" "$@"
       ;;
     stop)
       shift
+      require_explicit_profile "claude stop"
       run_claude_switch stop "${PROFILE}" --port "${PORT}" "$@" || true
       stop_backend_if_needed
       ;;
     status)
       shift
+      require_explicit_profile "claude status"
       if [[ "${PROFILE}" == "sub2api" && -x "${SUB2API_CTL}" ]]; then
         run_backend status || true
       fi
@@ -668,6 +978,7 @@ run_claude() {
       ;;
     logs)
       shift
+      require_explicit_profile "claude logs"
       mkdir -p "${GATEWAY_DIR}/runtime"
       local log_path="${GATEWAY_DIR}/runtime/litellm-${PROFILE}-${PORT}.log"
       touch "${log_path}"
@@ -676,10 +987,12 @@ run_claude() {
       ;;
     env)
       shift
+      require_explicit_profile "claude env"
       run_claude_switch env "${PROFILE}" --port "${PORT}" "$@"
       ;;
     prepare)
       shift
+      require_explicit_profile "claude prepare"
       ensure_backend_started
       run_claude_switch prepare "${PROFILE}" --port "${PORT}" "$@"
       ;;
@@ -735,8 +1048,17 @@ run_codex() {
     list)
       list_profiles
       ;;
+    use|"")
+      shift || true
+      if [[ "${cmd}" == "" && "${PROFILE_EXPLICIT}" != "1" ]]; then
+        exec codex "$@"
+      fi
+      require_explicit_profile "codex use"
+      persist_codex_profile
+      ;;
     backend)
       shift
+      require_explicit_profile "codex backend"
       if [[ "${PROFILE}" != "sub2api" ]]; then
         die "backend only applies to profile: sub2api"
       fi
@@ -744,16 +1066,19 @@ run_codex() {
       ;;
     serve)
       shift
+      require_explicit_profile "codex serve"
       ensure_backend_started
       echo "codex profile ${PROFILE} is ready"
       ;;
     stop)
       shift
+      require_explicit_profile "codex stop"
       stop_backend_if_needed
       echo "codex profile ${PROFILE} stopped"
       ;;
     status)
       shift
+      require_explicit_profile "codex status"
       load_profile_vars
       if [[ "${PROFILE}" == "sub2api" && -x "${SUB2API_CTL}" ]]; then
         run_backend status || true
@@ -762,6 +1087,7 @@ run_codex() {
       ;;
     logs)
       shift
+      require_explicit_profile "codex logs"
       if [[ "${PROFILE}" != "sub2api" ]]; then
         die "logs only applies to profile: sub2api"
       fi
@@ -769,6 +1095,7 @@ run_codex() {
       ;;
     env)
       shift
+      require_explicit_profile "codex env"
       load_profile_vars
       echo "PROFILE=${PROFILE}"
       echo "BASE_URL=${PROFILE_BASE_URL}"
@@ -777,14 +1104,12 @@ run_codex() {
       ;;
     persist)
       shift
+      require_explicit_profile "codex persist"
       persist_codex_profile
       ;;
-    logout)
+    show|prepare)
       shift
-      logout_codex "$@"
-      ;;
-    prepare)
-      shift
+      require_explicit_profile "codex show"
       load_profile_vars
       cat <<JSON
 {
@@ -795,7 +1120,59 @@ run_codex() {
 }
 JSON
       ;;
+    run)
+      shift
+      require_explicit_profile "codex run"
+      ensure_backend_started
+      load_profile_vars
+
+      local jq_profile
+      local jq_model
+      local jq_reasoning
+      local jq_provider_name
+      local jq_base_url
+      local jq_wire_api
+      local jq_env_key
+      local jq_requires_auth
+      jq_profile="$(json_quote "${PROFILE}")"
+      jq_model="$(json_quote "${PROFILE_MODEL}")"
+      jq_reasoning="$(json_quote "${PROFILE_REASONING}")"
+      jq_provider_name="$(json_quote "${PROFILE_PROVIDER_NAME}")"
+      jq_base_url="$(json_quote "${PROFILE_BASE_URL}")"
+      jq_wire_api="$(json_quote "${PROFILE_WIRE_API}")"
+      jq_env_key="$(json_quote "${PROFILE_ENV_KEY}")"
+      jq_requires_auth="${PROFILE_REQUIRES_OPENAI_AUTH}"
+
+      local -a codex_args
+      codex_args=(
+        -c 'mcp_servers={}'
+        -c "model_provider=${jq_profile}"
+        -c "model_providers.${PROFILE}.name=${jq_provider_name}"
+        -c "model_providers.${PROFILE}.base_url=${jq_base_url}"
+        -c "model_providers.${PROFILE}.wire_api=${jq_wire_api}"
+        -c "model_providers.${PROFILE}.requires_openai_auth=${jq_requires_auth}"
+        -c "model_providers.${PROFILE}.env_key=${jq_env_key}"
+        -c "model=${jq_model}"
+      )
+
+      if [[ -n "${PROFILE_REASONING}" ]]; then
+        codex_args+=( -c "model_reasoning_effort=${jq_reasoning}" )
+      fi
+
+      if [[ -n "${PROFILE_API_KEY}" ]]; then
+        export OPENAI_API_KEY="${PROFILE_API_KEY}"
+      fi
+
+      exec codex "${codex_args[@]}" "$@"
+      ;;
+    logout)
+      shift
+      logout_codex "$@"
+      ;;
     *)
+      if [[ "${PROFILE_EXPLICIT}" != "1" ]]; then
+        exec codex "$cmd" "$@"
+      fi
       ensure_backend_started
       load_profile_vars
 
@@ -842,6 +1219,7 @@ JSON
 }
 
 ENTRY_NAME="$(basename "$0")"
+INITIAL_ARGC="$#"
 CLIENT="claude"
 
 if [[ "$ENTRY_NAME" == "codex-switch" ]]; then
@@ -853,6 +1231,11 @@ fi
 if [[ $# -gt 0 ]] && is_client "$1"; then
   CLIENT="$1"
   shift
+fi
+
+if [[ "${ENTRY_NAME}" == "agent-switch" && "${INITIAL_ARGC}" -eq 0 && -t 0 && -t 1 && "${AGENT_SWITCH_INTERACTIVE_MENU:-1}" != "0" ]]; then
+  run_interactive_menu
+  exit 0
 fi
 
 if [[ $# -gt 0 ]] && [[ "$1" == "list" ]]; then
@@ -877,9 +1260,19 @@ if [[ $# -gt 0 ]] && [[ "$1" == "profile" ]]; then
   exit 0
 fi
 
+if [[ $# -gt 0 ]] && [[ "$1" != -* ]] && ! is_profile "$1"; then
+  if [[ "${CLIENT}" == "codex" ]]; then
+    is_codex_command "$1" || die "unknown profile or codex subcommand: $1"
+  else
+    is_claude_command "$1" || die "unknown profile or claude subcommand: $1"
+  fi
+fi
+
 PROFILE=""
+PROFILE_EXPLICIT=0
 if [[ $# -gt 0 ]] && is_profile "$1"; then
   PROFILE="$1"
+  PROFILE_EXPLICIT=1
   shift
 fi
 if [[ -z "${PROFILE}" ]]; then

@@ -1,42 +1,42 @@
 # coding-agent-switch
 
-[简体中文](./README.zh-CN.md)
+[English](./README.md)
 
-CLI-first switcher for coding agents, designed primarily for Linux/Unix environments.
+面向 Linux/Unix 环境的 CLI-first coding agent 切换工具。
 
-## Overview
+## 概览
 
-`coding-agent-switch` focuses on two workflows:
+`coding-agent-switch` 主要解决两类需求：
 
-1. Switch Codex between different OpenAI-compatible providers.
-2. Optionally switch Claude Code between:
-   - `native`: regular Claude
-   - `profile`: a LiteLLM gateway backed by a Codex/OpenAI-compatible provider
+1. 在不同 OpenAI 兼容 provider 之间切换 Codex。
+2. 按需切换 Claude Code 的底层模式：
+   - `native`：原生 Claude
+   - `profile`：通过 LiteLLM 网关转到 OpenAI 兼容 provider
 
-The repository only contains templates and switching logic. It does not include secrets.
+仓库只包含模板和切换逻辑，不包含敏感信息。
 
-## Why This Exists
+## 为什么做这个工具
 
-Official Codex and Claude are great, but they can be expensive for daily usage. Many users also have access to third-party compatible providers and want one simple CLI to switch between them.
+官方 Codex 和 Claude 很好用，但日常成本并不低。很多用户手上同时有多个第三方兼容 provider，希望通过一个简单 CLI 在它们之间切换。
 
-This tool keeps the core workflow simple:
+这个工具把主路径收得很明确：
 
-- Codex profile switching is the primary feature.
-- Claude gateway switching is optional and installed only when needed.
-- Private provider profiles stay local and out of git.
+- Codex profile 切换是核心功能
+- Claude gateway 切换是可选增强
+- 私有 provider profile 留在本地，不进 git
 
-## Feature Overview
+## 功能概览
 
-- Primary entrypoint: `agent-switch`
-- Compatibility entrypoints: `codex-switch`, `claude-switch`
-- Interactive menu: run `agent-switch` in a TTY
-- Profile creation helper: `add-profile`
-- Default install mode: Codex-only
-- Optional gateway component: `gateway/claude-gateway-switch`
-- Config templates: `profiles/*/config.toml` + `auth.json.template`
-- Local private profiles: `profiles-local/*`
+- 主入口：`agent-switch`
+- 兼容入口：`codex-switch`、`claude-switch`
+- 支持 TTY 交互菜单
+- profile 创建助手：`add-profile`
+- 默认安装模式：Codex-only
+- 可选网关组件：`gateway/claude-gateway-switch`
+- 配置模板：`profiles/*/config.toml` 和 `auth.json.template`
+- 本地私有 profile：`profiles-local/*`
 
-## Repository Layout
+## 目录结构
 
 ```text
 coding-agent-switch/
@@ -59,65 +59,67 @@ coding-agent-switch/
 └── .gitignore
 ```
 
-## Requirements
+`profiles/` 用来放模板或共享配置，`profiles-local/` 用来放本机私有 provider，不提交到 git。
 
-### Default: Codex-only
+## 依赖要求
+
+### 默认模式：Codex-only
 
 - `codex`
 - `python3` 3.10+
 
-### Optional: Claude gateway
+### 可选模式：Claude gateway
 
 - `claude`
-- `./install-claude-gateway.sh` to install LiteLLM dependencies
+- 执行 `./install-claude-gateway.sh` 安装 LiteLLM 依赖
 
-## Installation
+## 安装
 
-Run this in the repository root:
+在仓库根目录执行：
 
 ```bash
 ./install.sh
 ```
 
-This will:
+它会：
 
-- create `.env` from `.env.example` if needed
-- skip LiteLLM by default
-- link `agent-switch`, `codex-switch`, and `add-profile` into `~/.local/bin`
+- 在需要时从 `.env.example` 初始化 `.env`
+- 默认跳过 LiteLLM
+- 把 `agent-switch`、`codex-switch`、`add-profile` 链接到 `~/.local/bin`
 
-If you also want the Claude gateway:
+如果你还要启用 Claude gateway：
 
 ```bash
 ./install-claude-gateway.sh
 ```
 
-This installs LiteLLM dependencies and links `claude-switch`.
+这一步会安装 LiteLLM 依赖并链接 `claude-switch`。
 
-## PATH Setup
+## PATH 配置
 
-Add `~/.local/bin` to your shell PATH so you can run the commands directly.
+把 `~/.local/bin` 加进 PATH，之后就可以直接运行命令。
 
-For zsh:
+zsh：
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-For bash:
+bash：
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-For fish:
+fish：
 
 ```fish
 set -U fish_user_paths $HOME/.local/bin $fish_user_paths
 ```
 
-Verify:
+验证：
 
 ```bash
 command -v agent-switch
@@ -125,52 +127,54 @@ command -v codex-switch
 command -v add-profile
 ```
 
-If you enabled the Claude gateway:
+如果启用了 Claude gateway，再额外验证：
 
 ```bash
 command -v claude-switch
 ```
 
-## Quick Start
+## 快速开始
 
-1. Install the tool:
+1. 安装工具：
 
 ```bash
 cd coding-agent-switch
 ./install.sh
 ```
 
-2. Put provider keys into per-profile `auth.json` files. Use `.env` only as a fallback.
-3. Check available profiles:
+2. 推荐把 provider key 放进各自 profile 的 `auth.json`，`.env` 只作为兼容 fallback。
+3. 查看可用 profile：
 
 ```bash
 agent-switch list
 ```
 
-4. If needed, install the Claude gateway:
+4. 如果需要，再安装 Claude gateway：
 
 ```bash
 ./install-claude-gateway.sh
 ```
 
-## Common Commands
+## 常用命令
 
-### 0) Interactive Menu
+### 0) 交互菜单
 
 ```bash
 agent-switch
 ```
 
-Available in the menu:
+菜单内支持：
 
-- number keys
+- 数字键
 - `↑/↓`
 - `Enter`
 - `q`
 
-### 1) Create a Profile
+这是纯 TTY 菜单，适合没有 GUI 的 Linux/Unix 服务器环境。
 
-Direct arguments:
+### 1) 创建 Profile
+
+直接传参数：
 
 ```bash
 add-profile --name pro \
@@ -180,7 +184,7 @@ add-profile --name pro \
   --requires-openai-auth true
 ```
 
-Or provide a TOML snippet:
+或者传 TOML 片段：
 
 ```bash
 cat <<'EOF' | add-profile --api-key sk-xxxx --provider-snippet-file -
@@ -192,22 +196,22 @@ requires_openai_auth = true
 EOF
 ```
 
-Interactive mode:
+交互方式：
 
 ```bash
 add-profile
 ```
 
-Compatibility aliases:
+兼容命令：
 
 ```bash
 agent-switch profile add --name pro --base-url https://api.example.com/v1 --api-key sk-xxxx
 agent-switch profile create pro --base-url https://api.example.com/v1 --api-key sk-xxxx
 ```
 
-### 2) Create Multiple Local Profiles
+### 2) 创建多个本地 Profile
 
-Examples:
+示例：
 
 ```bash
 agent-switch profile create provider-a \
@@ -230,7 +234,7 @@ agent-switch profile create provider-c \
 agent-switch profile list
 ```
 
-Recommended local auth file:
+推荐的本地 `auth.json`：
 
 ```json
 {
@@ -238,11 +242,11 @@ Recommended local auth file:
 }
 ```
 
-`.env` values such as `PROVIDER_A_API_KEY` still work as a fallback, but they are not the preferred path.
+`.env` 里的 `PROVIDER_A_API_KEY` 这类值仍可作为 fallback，但不是首选路径。
 
-### 3) Codex Provider Switching
+### 3) Codex Provider 切换
 
-Persistent switching is the main workflow.
+持久切换是主路径。
 
 ```bash
 agent-switch codex provider-a
@@ -250,67 +254,67 @@ agent-switch codex provider-b
 agent-switch codex provider-c
 ```
 
-Explicit equivalent:
+显式等价写法：
 
 ```bash
 agent-switch codex provider-a use
 agent-switch codex provider-b use
 ```
 
-Show resolved profile data:
+查看解析结果：
 
 ```bash
 agent-switch codex provider-a show
 agent-switch codex provider-b env
 ```
 
-One-off debugging run without changing `~/.codex`:
+单次调试运行，不修改 `~/.codex`：
 
 ```bash
 agent-switch codex provider-a run -p "Reply with exactly OK."
 ```
 
-Backup and restore native Codex auth/config:
+备份和恢复原生 Codex 登录态/配置：
 
 ```bash
 agent-switch codex native export-auth official-main
 agent-switch codex native restore-auth official-main
 ```
 
-Logout and clean provider residue from current Codex config:
+退出登录并清理当前 provider 残留：
 
 ```bash
 agent-switch codex logout
 ```
 
-### 4) Claude Backend Switching
+### 4) Claude 后端切换
 
-Make sure you have already run:
+先确保执行过：
 
 ```bash
 ./install-claude-gateway.sh
 ```
 
-Native Claude:
+原生 Claude：
 
 ```bash
 agent-switch claude native
 ```
 
-Profile-backed Claude via LiteLLM:
+通过 LiteLLM 的 profile 模式：
 
 ```bash
 agent-switch claude provider-a
 agent-switch claude provider-b
 ```
 
-Single prompt:
+单次 prompt：
 
 ```bash
 agent-switch claude provider-b -p "Reply with exactly OK."
 ```
 
-### 5) Gateway Operations
+### 5) 网关运维
 
 ```bash
 agent-switch claude provider-b serve
@@ -319,16 +323,18 @@ agent-switch claude provider-b logs
 agent-switch claude provider-b stop
 ```
 
-## Configuration Model
+这部分只有启用 Claude gateway 时才需要。
 
-Preferred secret handling:
+## 配置模型
 
-- `profiles/*/config.toml`: base URL, model, env key
-- `profiles-local/*/config.toml`: local private provider profiles
-- `profiles-local/*/auth.json`: real API keys
-- `.env`: compatibility fallback only
+推荐的密钥管理方式：
 
-Example `auth.json`:
+- `profiles/*/config.toml`：base URL、model、env key
+- `profiles-local/*/config.toml`：本地私有 provider profile
+- `profiles-local/*/auth.json`：真实 API key
+- `.env`：仅作兼容 fallback
+
+`auth.json` 示例：
 
 ```json
 {
@@ -336,26 +342,26 @@ Example `auth.json`:
 }
 ```
 
-Runtime lookup priority:
+运行时查找优先级：
 
 1. `profiles-local/<name>/auth.json`
-2. provider-specific env key from `config.toml`
-3. generic `OPENAI_API_KEY`
+2. `config.toml` 里定义的 provider 专用环境变量
+3. 通用 `OPENAI_API_KEY`
 
-Native Codex auth snapshots are stored under:
+原生 Codex 登录态快照存放在：
 
 ```text
 profiles-local/<name>/codex-native/
 ```
 
-Available commands:
+可用命令：
 
 - `agent-switch codex native export-auth <name>`
 - `agent-switch codex native restore-auth <name>`
 
-Existing files are backed up with `.bak.YYYYMMDD-HHMMSS`.
+已有文件会自动备份为 `.bak.YYYYMMDD-HHMMSS`。
 
-## Prompt for AI Coding Assistants
+## 给 AI Coding Assistant 的提示词
 
 ```text
 Deploy coding-agent-switch on this machine:
@@ -369,25 +375,25 @@ Deploy coding-agent-switch on this machine:
 8) Do not commit .env, profiles-local/, profiles/*/auth.json, or gateway/runtime/
 ```
 
-## Security Notes
+## 安全建议
 
-- Commit templates, not real keys or tokens.
-- Keep `auth.json`, `.env`, and runtime logs local.
-- Keep `profiles-local/` out of git.
-- Keep the gateway bound to loopback only.
-- Validate with `show` or `status` before switching real traffic.
+- 只提交模板，不提交真实 key 或 token
+- `auth.json`、`.env`、runtime 日志都应保存在本地
+- `profiles-local/` 不进 git
+- gateway 仅绑定本地回环地址
+- 切正式流量前先用 `show` 或 `status` 验证
 
-## Positioning
+## 定位
 
-This is a CLI-first tool. It is intended as a scriptable alternative or complement to GUI-oriented switchers such as cc switch, not as a GUI replacement.
+这是一个 CLI-first 工具，定位是对 GUI 风格切换器（如 cc switch）的脚本化补位，而不是 GUI 替代品。
 
-## Suggested Providers
+## 推荐 Provider
 
-If you are looking for compatible providers, here are some examples:
+如果你在找兼容 provider，可以参考：
 
 - FoxCode: <https://foxcode.rjj.cc/auth/register?aff=4YNPP>
 - Codex For Me: <https://codex-for.me/?invite=9608>
 
-### Disclosure
+### 利益披露
 
-If someone registers through the links above and later spends on those platforms, the project maintainer may receive referral rewards from the platform.
+如果有人通过上面的邀请链接注册并后续消费，项目维护者可能会获得平台返利。
